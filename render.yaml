@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: livestream-proctor
+    runtime: node
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_JWT_SECRET
+        sync: false
+      - key: ADMIN_COOKIE_TTL_HOURS
+        value: "8"
+      - key: CORS_ORIGIN
+        sync: false
+      - key: MAX_PARTICIPANTS_PER_ROOM
+        value: "50"
+      - key: TAB_HIDDEN_ALERT_THRESHOLD_MS
+        value: "10000"

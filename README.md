@@ -57,14 +57,20 @@ Built for **CPREC Nepal**.
 
 ```
 livestream/
+├── .env.example            # Documented configuration placeholders
 ├── .gitignore
-├── .env.example
+├── LICENSE
 ├── package.json
-├── README.md
+├── package-lock.json
+├── quickstart.sh           # Local dependency/configuration helper
+├── render.yaml             # Render deployment blueprint
 ├── server.js               # Express + Socket.io + LiveKit token generation
-└── public/
-    ├── index.html          # Student classroom UI
-    └── admin.html          # Admin monitoring dashboard
+├── public/
+│   ├── index.html          # Student classroom UI
+│   └── admin.html          # Admin monitoring dashboard
+└── docs/
+    ├── DEPLOYMENT.md       # Hosting, TLS, and operations guide
+    └── RELEASE_CHECKLIST.md
 ```
 
 ---
@@ -82,7 +88,7 @@ livestream/
 ```bash
 git clone https://github.com/cprec-nepal/livestream.git
 cd livestream
-npm install
+npm ci
 ```
 
 ### 3. Configure
@@ -98,11 +104,10 @@ cp .env.example .env
 | `LIVEKIT_API_SECRET`          | LiveKit API secret                                       | `YOUR_LIVEKIT_API_SECRET`            |
 | `LIVEKIT_URL`                 | LiveKit WebSocket URL                                    | `wss://your-livekit-server…`         |
 | `PORT`                        | HTTP port for the app server                            | `3000`                               |
-| `NODE_ENV`                    | Node environment                                         | `production`                         |
+| `NODE_ENV`                    | Node environment                                         | `development`                        |
 | `CORS_ORIGIN`                | Comma-separated allowed origins, or `*`                | `*`                                  |
 | `MAX_PARTICIPANTS_PER_ROOM`  | Hard cap before token issuance is refused               | `50`                                 |
 | `TAB_HIDDEN_ALERT_THRESHOLD_MS` | Time a tab can stay hidden before an elevated alert | `10000`                              |
-| `SNAPSHOT_INTERVAL_MS`       | Interval between client snapshot-hash reports            | `30000`                              |
 | `ADMIN_PASSWORD`             | Password to access `/admin.html` (≥ 12 chars in prod)   | `unset`                              |
 | `ADMIN_JWT_SECRET`           | Secret used to sign the `admin_session` JWT cookie (≥ 32 chars in prod) | `change-me-in-production` |
 | `ADMIN_COOKIE_TTL_HOURS`     | Admin session cookie TTL in hours                         | `8`                                  |
@@ -222,21 +227,18 @@ The single-password approach is appropriate for a single admin or a small team t
 
 ## 🛰️ Deployment
 
-This is a stateless-friendly Node app (the only in-memory state is room telemetry, which is fine to lose on restart for a lightweight proctor). Recommended deployment:
+Use a persistent Node.js host with WebSocket support, plus LiveKit Cloud or a separate LiveKit server. Static-only hosting is not sufficient.
 
-1. **LiveKit server** — run LiveKit separately (VM, Docker, or LiveKit Cloud).
-2. **App server** — `npm install && npm start` behind a reverse proxy (nginx / Caddy) that terminates TLS and proxies WebSocket upgrades for `/socket.io/`.
-3. **Static assets** in `public/` are served by Express — no separate CDN needed for small deployments.
+The included `render.yaml` provides a Render blueprint with reproducible installs, a production start command, and a `/health` check. Railway, a VM, and similar Node hosts can also run the app.
 
-Example systemd unit (excerpt):
+1. Copy `.env.example` values into your host's environment/secret settings.
+2. Set `NODE_ENV=production` and replace every LiveKit and admin placeholder.
+3. Set `CORS_ORIGIN` to the exact public HTTPS origin.
+4. Deploy with `npm ci && npm start`, then verify `/health` and test real audio/video between two browsers.
 
-```ini
-[Service]
-WorkingDirectory=/opt/livestream
-ExecStart=/usr/bin/node server.js
-Restart=on-failure
-EnvironmentFile=/opt/livestream/.env
-```
+See the complete **[deployment guide](docs/DEPLOYMENT.md)** and **[release checklist](docs/RELEASE_CHECKLIST.md)**.
+
+> **Before real classes or assessments:** add student authentication or signed invitations, server-side room authorization, and admin-login rate limiting. Start with one application instance because room counts and telemetry are stored in memory. Review privacy and consent requirements before enabling proctoring telemetry.
 
 ---
 
@@ -276,4 +278,4 @@ Response 503 when room is full:
 
 ## 📜 License
 
-MIT © CPREC Nepal
+Released under the [MIT License](LICENSE) © CPREC Nepal.
