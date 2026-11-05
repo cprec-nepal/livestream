@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ============================================================
 # livestream-proctor — quick start script
-# Run this after extracting the archive.
+# Run this from a local clone after installing Node.js 18+.
 # ============================================================
 set -e
 
 cd "$(dirname "$0")"
 
 echo "▶ 1. Installing dependencies ..."
-npm install --no-audit --no-fund
+npm ci --no-audit --no-fund
 
 echo ""
 echo "▶ 2. Creating .env from .env.example ..."
