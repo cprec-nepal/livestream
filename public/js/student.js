@@ -4,6 +4,10 @@
   (function () {
     'use strict';
 
+    // SDK global compat: the locally served UMD build (2.5.9) exposes
+    // `LivekitClient`; the legacy CDN min build exposed `LiveKit`.
+    window.LiveKit = window.LiveKit || window.LivekitClient;
+
     // --------------------------------------------------------------
     // DOM refs
     // --------------------------------------------------------------

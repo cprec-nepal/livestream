@@ -349,6 +349,14 @@ app.post('/admin/logout', (req, res) => {
 app.use('/admin.html', requireAdmin);
 app.use('/admin', requireAdmin);
 
+// Serve the LiveKit browser SDK from node_modules instead of the jsDelivr CDN
+// so rooms keep working on networks where the CDN is blocked or unreachable.
+// (Package exports map "." -> dist/livekit-client.umd.js for `require`.)
+const LIVEKIT_CLIENT_UMD = require.resolve('livekit-client');
+app.get('/js/vendor/livekit-client.umd.js', (_req, res) => {
+  res.sendFile(LIVEKIT_CLIENT_UMD);
+});
+
 // Now serve static files (public/index.html, public/admin.html, /socket.io/)
 app.use(express.static(path.join(__dirname, 'public'), {
   index: 'index.html',
