@@ -13,9 +13,10 @@
  *      over Socket.io and broadcast alerts to admin clients.
  *
  * Security:
- *   - Helmet for hardened HTTP headers
+ *   - Helmet for hardened HTTP headers (CSP: jsDelivr + wss:/https:, no eval)
  *   - CORS allowlist via CORS_ORIGIN env var
- *   - Rate limiting on /api/token to prevent token-grinding
+ *   - Rate limiting on /api/token (10/min/IP) and /admin/login (5/min/IP)
+ *   - Admin auth v1.2: SHA-256 password hash + timingSafeEqual + JWT cookie
  *   - In-memory session bookkeeping keyed by socket.id (good enough
  *     for a lightweight proctor; swap for Redis if you need to share
  *     state across multiple app-server instances)
@@ -50,12 +51,50 @@ const LIVEKIT_URL = process.env.LIVEKIT_URL || 'wss://your-livekit-server.exampl
 
 const MAX_PARTICIPANTS_PER_ROOM = parseInt(process.env.MAX_PARTICIPANTS_PER_ROOM || '50', 10);
 const TAB_HIDDEN_ALERT_THRESHOLD_MS = parseInt(process.env.TAB_HIDDEN_ALERT_THRESHOLD_MS || '10000', 10);
+const SNAPSHOT_INTERVAL_MS = parseInt(process.env.SNAPSHOT_INTERVAL_MS || '30000', 10);
 
-// ---- Admin authentication ----
+// ---- Admin authentication (v1.2) ----
 // Single-password admin login backed by env vars. Issues a signed JWT
 // cookie (admin_session) that the browser sends on every /admin* request.
 // For multi-admin with audit trails, see README.md §"Admin authentication".
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+//
+// v1.2 stores only the SHA-256 HASH of the admin password:
+//   ADMIN_PASSWORD_HASH = hex( SHA-256( actual_password ) )
+// The plaintext password never appears in config, logs, or the repo.
+// On login the server hashes the submitted password and compares the two
+// digests with crypto.timingSafeEqual (constant-time).
+//
+// Backward compatibility: deployments still using the legacy plaintext
+// ADMIN_PASSWORD variable keep working — the value is hashed once at
+// startup and the same constant-time digest comparison is used. A
+// deprecation warning is logged; migrate to ADMIN_PASSWORD_HASH.
+const ADMIN_PASSWORD_HASH_RAW = (process.env.ADMIN_PASSWORD_HASH || '').trim().toLowerCase();
+const ADMIN_PASSWORD_LEGACY = process.env.ADMIN_PASSWORD || '';
+
+function sha256Digest(value) {
+  return crypto.createHash('sha256').update(String(value), 'utf8').digest();
+}
+
+function parsePasswordHash(hex) {
+  if (!/^[a-f0-9]{64}$/.test(hex)) return null;
+  return Buffer.from(hex, 'hex');
+}
+
+let ADMIN_PASSWORD_HASH = parsePasswordHash(ADMIN_PASSWORD_HASH_RAW);
+let ADMIN_AUTH_SOURCE = 'none';
+if (ADMIN_PASSWORD_HASH) {
+  ADMIN_AUTH_SOURCE = 'hash';
+} else if (ADMIN_PASSWORD_HASH_RAW) {
+  console.error('[FATAL] ADMIN_PASSWORD_HASH must be a 64-character hex SHA-256 digest.');
+  console.error('        Generate one with: echo -n "your-password" | sha256sum');
+  process.exit(1);
+} else if (ADMIN_PASSWORD_LEGACY) {
+  ADMIN_PASSWORD_HASH = sha256Digest(ADMIN_PASSWORD_LEGACY);
+  ADMIN_AUTH_SOURCE = 'legacy-plaintext';
+  console.warn('[WARN] ADMIN_PASSWORD (plaintext) is deprecated. Migrate to ADMIN_PASSWORD_HASH:');
+  console.warn('       echo -n "your-password" | sha256sum  →  set ADMIN_PASSWORD_HASH in .env');
+}
+
 const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'change-me-in-production';
 const ADMIN_COOKIE_TTL_HOURS = parseInt(process.env.ADMIN_COOKIE_TTL_HOURS || '8', 10);
 
@@ -79,10 +118,15 @@ if (NODE_ENV === 'production') {
     console.error('[FATAL] LIVEKIT_URL is still a placeholder. Set it in your .env file.');
     process.exit(1);
   }
-  if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 12) {
-    console.error('[FATAL] ADMIN_PASSWORD is not set or is shorter than 12 characters.');
-    console.error('        Generate one with: openssl rand -hex 16');
-    console.error('        Then set ADMIN_PASSWORD in your .env file.');
+  if (ADMIN_AUTH_SOURCE === 'none') {
+    console.error('[FATAL] ADMIN_PASSWORD_HASH is not set.');
+    console.error('        Generate one with: echo -n "your-strong-password" | sha256sum');
+    console.error('        Then set ADMIN_PASSWORD_HASH in your .env file.');
+    process.exit(1);
+  }
+  if (ADMIN_AUTH_SOURCE === 'legacy-plaintext' && ADMIN_PASSWORD_LEGACY.length < 12) {
+    console.error('[FATAL] ADMIN_PASSWORD is shorter than 12 characters.');
+    console.error('        Use a stronger password, or migrate to ADMIN_PASSWORD_HASH.');
     process.exit(1);
   }
   if (ADMIN_JWT_SECRET === 'change-me-in-production' || ADMIN_JWT_SECRET.length < 32) {
@@ -136,6 +180,13 @@ function pushAlert(roomName, alert) {
 // ------------------------------------------------------------------
 const app = express();
 
+// Behind a reverse proxy (Render, Caddy, nginx, …) the real client IP
+// arrives in X-Forwarded-For. Only trust it when TRUST_PROXY=true so
+// rate limiting keys on the client IP instead of the proxy IP.
+if (process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', 1);
+}
+
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -145,12 +196,14 @@ app.use(helmet({
         // LiveKit client SDK via jsDelivr CDN (single-file HTML UI)
         'https://cdn.jsdelivr.net',
       ],
-      // socket.io must talk back to this same origin
+      // socket.io + LiveKit must talk back over secure channels
       connectSrc: ["'self'", 'wss:', 'https:'],
       imgSrc: ["'self'", 'data:'],
       mediaSrc: ["'self'", 'blob:', 'https:'],
       styleSrc: ["'self'", "'unsafe-inline'"],
       fontSrc: ["'self'", 'data:'],
+      // LiveKit client workers (blob-based); no 'unsafe-eval' anywhere.
+      workerSrc: ["'self'", 'blob:'],
     },
   },
 }));
@@ -172,12 +225,14 @@ app.use(cookieParser());                            // populates req.cookies
 //   requireAdmin middleware — protects /admin.html and /admin/*
 // ------------------------------------------------------------------
 
-// Constant-time string comparison to defeat timing attacks on the password.
-function safeEqual(a, b) {
-  const ba = Buffer.from(String(a));
-  const bb = Buffer.from(String(b));
-  if (ba.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ba, bb);
+// Constant-time password check (v1.2): hash the submitted password with
+// SHA-256 and compare the two 32-byte digests with crypto.timingSafeEqual
+// so response timing never leaks how much of the password was correct.
+function passwordMatches(submitted) {
+  if (!ADMIN_PASSWORD_HASH) return false;
+  const submittedDigest = sha256Digest(submitted || '');
+  if (submittedDigest.length !== ADMIN_PASSWORD_HASH.length) return false;
+  return crypto.timingSafeEqual(submittedDigest, ADMIN_PASSWORD_HASH);
 }
 
 function requireAdmin(req, res, next) {
@@ -198,6 +253,8 @@ app.get('/admin/login', (req, res) => {
     errMsg = '<div class="err">Invalid password. Please try again.</div>';
   } else if (req.query.err === '2') {
     errMsg = '<div class="err">Your session has expired. Please sign in again.</div>';
+  } else if (req.query.err === '3') {
+    errMsg = '<div class="err">Too many sign-in attempts. Please wait a minute and try again.</div>';
   }
   res.type('html').send(
     '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">' +
@@ -247,9 +304,23 @@ app.get('/admin/login', (req, res) => {
   );
 });
 
-app.post('/admin/login', (req, res) => {
+// Rate limit: 5 login attempts / minute / IP (brute-force guard).
+// The handler redirects back to the form so browser users see a friendly
+// message instead of a raw JSON error.
+const loginLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    console.warn('[admin] login rate limit hit for ' + (req.ip || 'unknown'));
+    return res.redirect('/admin/login?err=3');
+  },
+});
+
+app.post('/admin/login', loginLimiter, (req, res) => {
   const submitted = (req.body && req.body.password) || '';
-  if (!safeEqual(submitted, ADMIN_PASSWORD)) {
+  if (!passwordMatches(submitted)) {
     console.warn('[admin] failed login attempt from ' + (req.ip || 'unknown'));
     return res.redirect('/admin/login?err=1');
   }
@@ -307,6 +378,19 @@ app.get('/health', (req, res) => {
       .reduce((acc, r) => acc + r.participantCount, 0),
     maxParticipantsPerRoom: MAX_PARTICIPANTS_PER_ROOM,
     timestamp: Date.now(),
+  });
+});
+
+// ------------------------------------------------------------------
+// Public client config (no secrets — safe for the browser)
+// The student UI reads SNAPSHOT_INTERVAL_MS from here so the cadence is
+// controlled server-side via env var without a redeploy of the HTML.
+// ------------------------------------------------------------------
+app.get('/api/config', (req, res) => {
+  res.json({
+    maxParticipantsPerRoom: MAX_PARTICIPANTS_PER_ROOM,
+    tabHiddenAlertThresholdMs: TAB_HIDDEN_ALERT_THRESHOLD_MS,
+    snapshotIntervalMs: SNAPSHOT_INTERVAL_MS,
   });
 });
 
@@ -504,11 +588,13 @@ io.on('connection', (socket) => {
   socket.on('telemetry:snapshot_hash', (data) => {
     const session = socketToSession.get(socket.id);
     if (!session || !data || typeof data.hash !== 'string') return;
+    // Only accept well-formed SHA-256 hex digests (64 hex chars).
+    if (!/^[a-f0-9]{64}$/i.test(data.hash)) return;
     io.to(ADMIN_ROOM).emit('telemetry:snapshot_hash', {
       socketId: socket.id,
       roomName: session.roomName,
       identity: session.identity,
-      hash: data.hash.slice(0, 64),
+      hash: data.hash.toLowerCase(),
       timestamp: data.timestamp || Date.now(),
     });
   });
@@ -535,6 +621,7 @@ io.on('connection', (socket) => {
       config: {
         maxParticipantsPerRoom: MAX_PARTICIPANTS_PER_ROOM,
         tabHiddenAlertThresholdMs: TAB_HIDDEN_ALERT_THRESHOLD_MS,
+        snapshotIntervalMs: SNAPSHOT_INTERVAL_MS,
       },
       timestamp: Date.now(),
     });
@@ -596,21 +683,24 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
 // ------------------------------------------------------------------
-// Start
+// Start (only when run directly — importing this module for tests does
+// not bind a port)
 // ------------------------------------------------------------------
-server.listen(PORT, () => {
-  console.log('─────────────────────────────────────────────────────');
-  console.log(`  livestream-proctor  ·  ${NODE_ENV}`);
-  console.log(`  HTTP:           http://localhost:${PORT}`);
-  console.log(`  Student UI:     http://localhost:${PORT}/`);
-  console.log(`  Admin login:    http://localhost:${PORT}/admin/login`);
-  console.log(`  Admin UI:       http://localhost:${PORT}/admin.html`);
-  console.log(`  Health:         http://localhost:${PORT}/health`);
-  console.log(`  LiveKit URL:    ${LIVEKIT_URL}`);
-  console.log(`  Max/room:       ${MAX_PARTICIPANTS_PER_ROOM}`);
-  console.log(`  CORS origin:    ${CORS_ORIGINS === '*' ? '*' : CORS_ORIGINS.join(', ')}`);
-  console.log(`  Admin auth:     ${ADMIN_PASSWORD ? 'enabled' : 'DISABLED (set ADMIN_PASSWORD)'}`);
-  console.log('─────────────────────────────────────────────────────');
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log('─────────────────────────────────────────────────────');
+    console.log(`  livestream-proctor  ·  ${NODE_ENV}`);
+    console.log(`  HTTP:           http://localhost:${PORT}`);
+    console.log(`  Student UI:     http://localhost:${PORT}/`);
+    console.log(`  Admin login:    http://localhost:${PORT}/admin/login`);
+    console.log(`  Admin UI:       http://localhost:${PORT}/admin.html`);
+    console.log(`  Health:         http://localhost:${PORT}/health`);
+    console.log(`  LiveKit URL:    ${LIVEKIT_URL}`);
+    console.log(`  Max/room:       ${MAX_PARTICIPANTS_PER_ROOM}`);
+    console.log(`  CORS origin:    ${CORS_ORIGINS === '*' ? '*' : CORS_ORIGINS.join(', ')}`);
+    console.log(`  Admin auth:     ${ADMIN_AUTH_SOURCE === 'none' ? 'DISABLED (set ADMIN_PASSWORD_HASH)' : 'enabled (' + ADMIN_AUTH_SOURCE + ')'}`);
+    console.log('─────────────────────────────────────────────────────');
+  });
+}
 
 module.exports = { app, server, io };

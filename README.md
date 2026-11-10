@@ -59,12 +59,16 @@ Built for **CPREC Nepal**.
 livestream/
 ├── .env.example            # Documented configuration placeholders
 ├── .gitignore
+├── .github/workflows/
+│   └── deploy.yml          # CI: install + syntax check + smoke test
+├── INSTALL.md              # Setup & GitHub push instructions
 ├── LICENSE
 ├── package.json
 ├── package-lock.json
 ├── quickstart.sh           # Local dependency/configuration helper
 ├── render.yaml             # Render deployment blueprint
 ├── server.js               # Express + Socket.io + LiveKit token generation
+├── test.sh                 # Smoke test: /health, admin auth, /api/config
 ├── public/
 │   ├── index.html          # Student classroom UI
 │   └── admin.html          # Admin monitoring dashboard
@@ -108,7 +112,8 @@ cp .env.example .env
 | `CORS_ORIGIN`                | Comma-separated allowed origins, or `*`                | `*`                                  |
 | `MAX_PARTICIPANTS_PER_ROOM`  | Hard cap before token issuance is refused               | `50`                                 |
 | `TAB_HIDDEN_ALERT_THRESHOLD_MS` | Time a tab can stay hidden before an elevated alert | `10000`                              |
-| `ADMIN_PASSWORD`             | Password to access `/admin.html` (≥ 12 chars in prod)   | `unset`                              |
+| `SNAPSHOT_INTERVAL_MS`       | Canvas snapshot-hash cadence (exposed via `/api/config`) | `30000`                              |
+| `ADMIN_PASSWORD_HASH`        | SHA-256 hex digest of the admin password (v1.2)          | `unset`                              |
 | `ADMIN_JWT_SECRET`           | Secret used to sign the `admin_session` JWT cookie (≥ 32 chars in prod) | `change-me-in-production` |
 | `ADMIN_COOKIE_TTL_HOURS`     | Admin session cookie TTL in hours                         | `8`                                  |
 
@@ -124,6 +129,14 @@ Then open:
 
 - **Student classroom:** http://localhost:3000/
 - **Admin dashboard:** http://localhost:3000/admin.html
+
+Verify the deployment with the smoke test:
+
+```bash
+./test.sh
+```
+
+See **[INSTALL.md](INSTALL.md)** for full setup + GitHub push instructions.
 
 ---
 
@@ -167,42 +180,44 @@ Crucially, the capture + hash work is scheduled with `requestIdleCallback` (with
 
 - **No client-side secrets.** The student UI never sees the LiveKit API key/secret. It requests a short-lived (2 h) JWT from `POST /api/token`, which the server signs with the secret.
 - **Capacity enforced before token issuance.** The server tracks per-room participant counts in memory and refuses to mint a token for students when a room is at `MAX_PARTICIPANTS_PER_ROOM`, returning HTTP 503.
-- **Admin authentication (since v1.1).** The admin dashboard at `/admin.html` is protected by a single-password login backed by the `ADMIN_PASSWORD` env var. Successful authentication issues a signed `admin_session` JWT cookie (HttpOnly, Secure in production, SameSite=Strict, 8 h TTL by default). See §"Admin authentication" below.
+- **Admin authentication (v1.2).** The admin dashboard at `/admin.html` is protected by a single-password login backed by the `ADMIN_PASSWORD_HASH` env var (SHA-256 digest of the password — the plaintext is never stored). The server hashes each submitted password and compares digests with `crypto.timingSafeEqual`. Successful authentication issues a signed `admin_session` JWT cookie (HttpOnly, Secure in production, SameSite=Strict, 8 h TTL by default). See §"Admin authentication" below.
 - **Socket.io auth guard.** Every Socket.io connection is checked for the `admin_session` cookie by `io.use()`. Sockets without a valid cookie can still connect as students (telemetry only) but the `admin:join` event is rejected unless the socket is marked `isAdmin` by the middleware — so a malicious user can't open a console and listen to admin events.
-- **Helmet** sets a sane set of HTTP security headers.
+- **Helmet** sets a sane set of HTTP security headers (CSP allows `https://cdn.jsdelivr.net` + `wss:`/`https:`; no `eval()`).
 - **CORS allowlist** via `CORS_ORIGIN` — set this to your real origins in production.
-- **Rate limiting** on `/api/token` (10 requests / minute / IP) prevents token-grinding.
+- **Rate limiting** on `/api/token` (10 requests / minute / IP) prevents token-grinding, and on `/admin/login` (5 attempts / minute / IP) prevents password brute-force.
 - **Per-socket session binding** — every telemetry event is matched to the authenticated socket session, so a student can't spoof alerts for another identity without first obtaining that identity's token.
 
 ---
 
 ## 🔑 Admin authentication
 
-Since v1.1 the admin dashboard is password-protected. The flow is:
+Since v1.2 the admin dashboard is password-protected with a **hashed** password. The flow is:
 
 1. Admin visits `/admin.html` in a browser.
 2. The `requireAdmin` middleware checks for a valid `admin_session` cookie. If none (or expired), the browser is redirected to `/admin/login`.
 3. The login form is rendered (dark-themed, matches the dashboard). Admin enters the password and submits.
-4. The server compares the submitted password against `ADMIN_PASSWORD` using `crypto.timingSafeEqual` (constant-time, defends against timing attacks).
+4. The server computes `SHA-256(submitted)` and compares the digest against `ADMIN_PASSWORD_HASH` using `crypto.timingSafeEqual` (constant-time, defends against timing attacks).
 5. On success: a signed JWT cookie is set and the browser is redirected to `/admin.html`.
-6. On failure: the login form re-renders with an error message and the failed attempt is logged with the source IP.
+6. On failure: the login form re-renders with an error message and the failed attempt is logged with the source IP. After 5 attempts/minute/IP, further attempts are throttled.
 
 ### Configuration
 
 Add these to your `.env` (see `.env.example`):
 
 ```bash
-ADMIN_PASSWORD=replace-with-a-strong-password       # ≥ 12 chars, required in prod
+ADMIN_PASSWORD_HASH=<64-char hex SHA-256 digest>    # required in prod
 ADMIN_JWT_SECRET=replace-with-a-long-random-secret  # ≥ 32 chars, required in prod
 ADMIN_COOKIE_TTL_HOURS=8                            # optional, default 8
 ```
 
-Generate strong values with:
+Generate the values with:
 
 ```bash
-openssl rand -hex 16   # → ADMIN_PASSWORD
-openssl rand -hex 32   # → ADMIN_JWT_SECRET
+echo -n "your-strong-password" | sha256sum   # → ADMIN_PASSWORD_HASH
+openssl rand -hex 32                         # → ADMIN_JWT_SECRET
 ```
+
+> **Migrating from v1.1:** deployments still using the plaintext `ADMIN_PASSWORD` variable keep working (it is hashed once at startup), but a deprecation warning is logged. Migrate to `ADMIN_PASSWORD_HASH` and remove `ADMIN_PASSWORD` from your environment.
 
 ### Endpoints
 
@@ -218,7 +233,7 @@ openssl rand -hex 32   # → ADMIN_JWT_SECRET
 
 The single-password approach is appropriate for a single admin or a small team that shares one password. When you need per-administrator accountability:
 
-1. Replace `ADMIN_PASSWORD` with a `users.json` store: `[{ username, passwordHash (bcrypt), displayName, role }]`.
+1. Replace `ADMIN_PASSWORD_HASH` with a `users.json` store: `[{ username, passwordHash (bcrypt), displayName, role }]`.
 2. Extend the login form to ask for username + password; bcrypt-compare the hash on POST.
 3. Include `{ sub: username, name: displayName, role }` in the JWT payload so the admin UI can show who is currently signed in.
 4. Append every login attempt (success or failure) to `audit.log` with timestamp + IP + username.
@@ -238,7 +253,7 @@ The included `render.yaml` provides a Render blueprint with reproducible install
 
 See the complete **[deployment guide](docs/DEPLOYMENT.md)** and **[release checklist](docs/RELEASE_CHECKLIST.md)**.
 
-> **Before real classes or assessments:** add student authentication or signed invitations, server-side room authorization, and admin-login rate limiting. Start with one application instance because room counts and telemetry are stored in memory. Review privacy and consent requirements before enabling proctoring telemetry.
+> **Before real classes or assessments:** add student authentication or signed invitations and server-side room authorization. Start with one application instance because room counts and telemetry are stored in memory. Review privacy and consent requirements before enabling proctoring telemetry.
 
 ---
 
@@ -252,7 +267,8 @@ See the complete **[deployment guide](docs/DEPLOYMENT.md)** and **[release check
 | `POST` | `/admin/logout`   | Clear cookie, redirect to `/admin/login`              |
 | `GET`  | `/admin.html`     | Admin dashboard UI (requires valid cookie)            |
 | `GET`  | `/health`         | Liveness probe — returns `{ ok: true, rooms, uptime }` |
-| `POST` | `/api/token`      | Mint a LiveKit access token (rate-limited)             |
+| `GET`  | `/api/config`     | Public client config (`snapshotIntervalMs`, thresholds) |
+| `POST` | `/api/token`      | Mint a LiveKit access token (rate-limited + capacity check) |
 
 ### `POST /api/token`
 

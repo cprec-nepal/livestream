@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# ============================================================
+# livestream-proctor — smoke test
+# Starts the server on a throwaway port with test credentials,
+# verifies the key endpoints, then shuts it down.
+#
+# Usage: ./test.sh [port]
+# ============================================================
+set -u
+
+PORT="${1:-3100}"
+BASE="http://localhost:${PORT}"
+ADMIN_PASSWORD="test-admin-password-123"
+ADMIN_HASH="$(printf '%s' "$ADMIN_PASSWORD" | sha256sum | awk '{print $1}')"
+
+PASS=0
+FAIL=0
+ok()   { PASS=$((PASS+1)); echo "  ✓ $1"; }
+bad()  { FAIL=$((FAIL+1)); echo "  ✗ $1"; }
+
+echo "▶ Starting server on port ${PORT} ..."
+LIVEKIT_URL="wss://test.livekit.cloud" \
+LIVEKIT_API_KEY="test-key" \
+LIVEKIT_API_SECRET="test-secret" \
+ADMIN_PASSWORD_HASH="${ADMIN_HASH}" \
+ADMIN_JWT_SECRET="test-jwt-secret-at-least-32-chars-long" \
+CORS_ORIGIN="*" \
+NODE_ENV="development" \
+PORT="${PORT}" \
+node server.js > /tmp/livestream-test.log 2>&1 &
+SERVER_PID=$!
+
+cleanup() {
+  kill "${SERVER_PID}" 2>/dev/null || true
+  wait "${SERVER_PID}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Wait for /health (up to ~10s)
+for i in $(seq 1 20); do
+  if curl -s -o /dev/null "${BASE}/health"; then break; fi
+  sleep 0.5
+done
+
+echo "▶ Running checks ..."
+
+# 1. /health returns 200 with ok:true
+HEALTH_BODY="$(curl -s "${BASE}/health")"
+HEALTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/health")"
+if [ "${HEALTH_CODE}" = "200" ] && printf '%s' "${HEALTH_BODY}" | grep -q '"ok":true'; then
+  ok "GET /health → 200 { ok: true }"
+else
+  bad "GET /health → ${HEALTH_CODE} ${HEALTH_BODY}"
+fi
+
+# 2. /admin.html redirects to /admin/login without a cookie
+REDIR="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "${BASE}/admin.html")"
+case "${REDIR}" in
+  302*"/admin/login"*) ok "GET /admin.html without cookie → 302 to /admin/login" ;;
+  *) bad "GET /admin.html without cookie → ${REDIR} (expected 302 → /admin/login)" ;;
+esac
+
+# 3. Wrong password is rejected (redirect back to login with err=1)
+WRONG_CODE="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' \
+  -X POST -d 'password=wrong-password' "${BASE}/admin/login")"
+case "${WRONG_CODE}" in
+  302*"/admin/login?err=1"*) ok "POST /admin/login wrong password → rejected" ;;
+  *) bad "POST /admin/login wrong password → ${WRONG_CODE} (expected 302 → err=1)" ;;
+esac
+
+# 4. Correct password (hashed server-side) sets the admin_session cookie
+COOKIE_JAR="$(mktemp)"
+LOGIN_CODE="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' \
+  -c "${COOKIE_JAR}" -X POST -d "password=${ADMIN_PASSWORD}" "${BASE}/admin/login")"
+case "${LOGIN_CODE}" in
+  302*"/admin.html"*) ok "POST /admin/login correct password → 302 to /admin.html" ;;
+  *) bad "POST /admin/login correct password → ${LOGIN_CODE} (expected 302 → /admin.html)" ;;
+esac
+
+if grep -q "admin_session" "${COOKIE_JAR}"; then
+  ok "admin_session cookie set (HttpOnly JWT)"
+else
+  bad "admin_session cookie NOT set"
+fi
+
+# 5. Authenticated /admin.html returns 200
+ADMIN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -b "${COOKIE_JAR}" "${BASE}/admin.html")"
+if [ "${ADMIN_CODE}" = "200" ]; then
+  ok "GET /admin.html with cookie → 200"
+else
+  bad "GET /admin.html with cookie → ${ADMIN_CODE} (expected 200)"
+fi
+rm -f "${COOKIE_JAR}"
+
+# 6. /api/config exposes telemetry settings
+CFG="$(curl -s "${BASE}/api/config")"
+if printf '%s' "${CFG}" | grep -q '"snapshotIntervalMs":30000' \
+   && printf '%s' "${CFG}" | grep -q '"tabHiddenAlertThresholdMs":10000'; then
+  ok "GET /api/config → snapshotIntervalMs + tabHiddenAlertThresholdMs"
+else
+  bad "GET /api/config → ${CFG}"
+fi
+
+# 7. /api/token validates input (400 without roomName/identity)
+TOKEN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' -d '{}' "${BASE}/api/token")"
+if [ "${TOKEN_CODE}" = "400" ]; then
+  ok "POST /api/token empty body → 400"
+else
+  bad "POST /api/token empty body → ${TOKEN_CODE} (expected 400)"
+fi
+
+# 8. CSP header allows jsDelivr + wss/https and blocks eval
+CSP="$(curl -s -I "${BASE}/" | grep -i 'content-security-policy' || true)"
+if printf '%s' "${CSP}" | grep -q 'cdn.jsdelivr.net' \
+   && printf '%s' "${CSP}" | grep -q 'wss:' \
+   && ! printf '%s' "${CSP}" | grep -q 'unsafe-eval'; then
+  ok "CSP allows cdn.jsdelivr.net + wss:/https:, no unsafe-eval"
+else
+  bad "CSP header unexpected: ${CSP}"
+fi
+
+echo ""
+echo "Result: ${PASS} passed, ${FAIL} failed"
+if [ "${FAIL}" -ne 0 ]; then
+  echo "Server log:"; cat /tmp/livestream-test.log
+  exit 1
+fi
+echo "All checks passed ✓"

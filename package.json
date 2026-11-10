@@ -1,11 +1,13 @@
 {
   "name": "livestream-proctor",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Mobile-optimized WebRTC (LiveKit) online session platform with lightweight proctoring telemetry",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "check": "node --check server.js",
+    "test": "bash test.sh",
     "healthcheck": "node -e \"fetch('http://localhost:'+(process.env.PORT||3000)+'/health').then(r=>r.json()).then(j=>console.log(j)).catch(e=>{console.error(e);process.exit(1)})\""
   },
   "keywords": [
