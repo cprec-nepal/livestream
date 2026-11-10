@@ -9,7 +9,7 @@ The application requires a persistent Node.js process and WebSocket support. Sta
 
 ## Before production
 
-This repository is suitable for a hosted demo or controlled pilot after deployment testing. Before private classes or high-stakes assessments, add student authentication or signed invitations, server-side room authorization, and admin-login rate limiting. Browser-supplied room names and identities are not an enrollment system.
+This repository is suitable for a hosted demo or controlled pilot after deployment testing. Before private classes or high-stakes assessments, add student authentication or signed invitations and server-side room authorization. Browser-supplied room names and identities are not an enrollment system.
 
 Review the complete [release checklist](RELEASE_CHECKLIST.md), including privacy and consent requirements.
 
@@ -34,8 +34,8 @@ In Render, create a **Blueprint Instance** from this repository. Render will det
 Generate admin secrets locally:
 
 ```bash
-openssl rand -hex 16  # ADMIN_PASSWORD
-openssl rand -hex 32  # ADMIN_JWT_SECRET
+echo -n "your-strong-password" | sha256sum  # ADMIN_PASSWORD_HASH
+openssl rand -hex 32                         # ADMIN_JWT_SECRET
 ```
 
 Configure:
@@ -45,7 +45,7 @@ Configure:
 | `LIVEKIT_URL` | Your LiveKit `wss://` URL |
 | `LIVEKIT_API_KEY` | LiveKit API key |
 | `LIVEKIT_API_SECRET` | LiveKit API secret |
-| `ADMIN_PASSWORD` | Unique generated password, at least 12 characters |
+| `ADMIN_PASSWORD_HASH` | SHA-256 hex digest of a unique password (≥ 12 chars) |
 | `ADMIN_JWT_SECRET` | Unique generated secret, at least 32 characters |
 | `CORS_ORIGIN` | Exact app origin, such as `https://sessions.example.org` |
 

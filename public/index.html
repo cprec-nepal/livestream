@@ -470,7 +470,10 @@
     // --------------------------------------------------------------
     const ua = navigator.userAgent || '';
     const isMobileUA = /Mobi|Android|iPhone|iPad|iPod|Windows Phone/i.test(ua);
-    const isSmallScreen = Math.min(window.screen.width, window.screen.height) <= 768;
+    // Screen width < 768px counts as mobile (min-dimension also catches
+    // landscape phones whose width alone would exceed 768px).
+    const isSmallScreen = window.innerWidth < 768
+      || Math.min(window.screen.width, window.screen.height) <= 768;
     const isMobile = isMobileUA || isSmallScreen;
 
     // Video profiles
@@ -893,12 +896,21 @@
     //   - only the hash is sent (no images)
     //   - work scheduled in idle time, never blocks the main thread
     // --------------------------------------------------------------
+    // Snapshot cadence comes from the server (SNAPSHOT_INTERVAL_MS env
+    // var, exposed via GET /api/config). Falls back to 30s if the
+    // request fails or the value is unusable.
+    let snapshotIntervalMs = 30000;
+    fetch('/api/config')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((cfg) => {
+        const ms = cfg && parseInt(cfg.snapshotIntervalMs, 10);
+        if (Number.isFinite(ms) && ms >= 5000) snapshotIntervalMs = ms;
+      })
+      .catch(() => { /* keep default */ });
+
     function startSnapshotHashing() {
-      const intervalMs = parseInt(
-        document.querySelector('meta[name="snapshot-interval"]')?.content || '30000', 10
-      );
       stopSnapshotHashing();
-      snapshotTimer = setInterval(scheduleSnapshot, intervalMs);
+      snapshotTimer = setInterval(scheduleSnapshot, snapshotIntervalMs);
       // Also fire one shortly after connect
       setTimeout(scheduleSnapshot, 4000);
     }
@@ -910,10 +922,11 @@
       }
     }
 
-    // requestIdleCallback polyfill for Safari < 17
+    // requestIdleCallback with setTimeout(fn, 100) fallback (Safari < 17).
+    // Snapshot hashing MUST never block the main thread.
     const ric = typeof window.requestIdleCallback === 'function'
       ? window.requestIdleCallback
-      : function (cb) { const t = Date.now(); return setTimeout(() => cb({ didTimeout: false, timeRemaining: () => Math.max(0, 50 - (Date.now() - t)) }), 1); };
+      : function (cb) { return setTimeout(() => cb({ didTimeout: false, timeRemaining: () => 50 }), 100); };
     const cic = typeof window.cancelIdleCallback === 'function'
       ? window.cancelIdleCallback
       : function (id) { clearTimeout(id); };

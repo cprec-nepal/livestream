@@ -18,7 +18,7 @@ Use this checklist for each public release and before enabling real classes or e
 
 - [ ] Set `NODE_ENV=production`.
 - [ ] Configure the real `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` in the host's secret settings.
-- [ ] Generate a unique `ADMIN_PASSWORD` of at least 12 characters.
+- [ ] Generate a unique admin password (≥ 12 chars) and set its SHA-256 digest as `ADMIN_PASSWORD_HASH`.
 - [ ] Generate a unique random `ADMIN_JWT_SECRET` of at least 32 characters.
 - [ ] Set `CORS_ORIGIN` to the exact HTTPS application origin, without a trailing slash.
 - [ ] Review room capacity, admin cookie TTL, and telemetry thresholds.
@@ -30,8 +30,8 @@ Use this checklist for each public release and before enabling real classes or e
 
 - [ ] Add student authentication or expiring, single-use join invitations before private classes or assessments.
 - [ ] Authorize room access and participant identity on the server; do not trust browser-supplied values alone.
-- [ ] Add rate limiting to the admin login endpoint.
-- [ ] Test rate limiting and client IP handling behind the production reverse proxy.
+- [ ] Confirm admin-login rate limiting (5 attempts/minute/IP) is enabled.
+- [ ] Test rate limiting and client IP handling behind the production reverse proxy (`TRUST_PROXY=true`).
 - [ ] Keep the admin dashboard private and use unique credentials for each environment.
 - [ ] Publish a privacy notice explaining telemetry, its purpose, retention, and user rights.
 - [ ] Obtain any required consent for webcam, microphone, and proctoring telemetry.
