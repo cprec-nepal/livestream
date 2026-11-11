@@ -112,12 +112,12 @@ else
   bad "POST /api/token empty body → ${TOKEN_CODE} (expected 400)"
 fi
 
-# 8. CSP header allows jsDelivr + wss/https and blocks eval
+# 8. CSP header pins the LiveKit origin + blocks eval
 CSP="$(curl -s -I "${BASE}/" | grep -i 'content-security-policy' || true)"
-if printf '%s' "${CSP}" | grep -q 'cdn.jsdelivr.net' \
-   && printf '%s' "${CSP}" | grep -q 'wss:' \
+if printf '%s' "${CSP}" | grep -q 'wss://test.livekit.cloud' \
+   && printf '%s' "${CSP}" | grep -q 'cdn.jsdelivr.net' \
    && ! printf '%s' "${CSP}" | grep -q 'unsafe-eval'; then
-  ok "CSP allows cdn.jsdelivr.net + wss:/https:, no unsafe-eval"
+  ok "CSP pins LiveKit origin + allows jsDelivr, no unsafe-eval"
 else
   bad "CSP header unexpected: ${CSP}"
 fi

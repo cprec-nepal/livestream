@@ -40,7 +40,7 @@ const jwt = require('jsonwebtoken');       // for admin session cookies
 const cookieParser = require('cookie-parser');
 const { Server: SocketIOServer } = require('socket.io');
 const { AccessToken } = require('livekit-server-sdk');
-const { TrackSource } = require('@livekit/protocol');
+const { TrackSource, TrackType } = require('@livekit/protocol');
 
 // ------------------------------------------------------------------
 // Configuration
@@ -51,6 +51,19 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || 'YOUR_LIVEKIT_API_KEY';
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || 'YOUR_LIVEKIT_API_SECRET';
 const LIVEKIT_URL = process.env.LIVEKIT_URL || 'wss://your-livekit-server.example.com';
+
+// Pin the LiveKit signaling host into CSP connect-src when LIVEKIT_URL
+// is a real wss(s) URL (not the placeholder). Returns e.g. 'wss://myproject.livekit.cloud'.
+function livekitCspOrigins() {
+  try {
+    const u = new URL(LIVEKIT_URL);
+    if ((u.protocol === 'wss:' || u.protocol === 'https:') && u.hostname && !/example\.com$/i.test(u.hostname)) {
+      return [u.origin];
+    }
+  } catch (e) { /* keep broad fallback below */ }
+  return ['wss:'];
+}
+
 
 const MAX_PARTICIPANTS_PER_ROOM = parseInt(process.env.MAX_PARTICIPANTS_PER_ROOM || '50', 10);
 const TAB_HIDDEN_ALERT_THRESHOLD_MS = parseInt(process.env.TAB_HIDDEN_ALERT_THRESHOLD_MS || '10000', 10);
@@ -335,6 +348,13 @@ if (process.env.TRUST_PROXY === 'true') {
 }
 
 app.use(helmet({
+  // One year, subdomains included. `preload` is deliberately NOT set:
+  // it is near-irreversible and would force HTTPS on every subdomain of
+  // the registrable domain — enable it only once the org is ready.
+  hsts: { maxAge: 31536000, includeSubDomains: true },
+  // Balanced referrer policy: origin sent cross-origin, full URL only
+  // same-origin (no-referrer broke legitimate deep-link flows).
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
@@ -343,8 +363,11 @@ app.use(helmet({
         // LiveKit client SDK via jsDelivr CDN (single-file HTML UI)
         'https://cdn.jsdelivr.net',
       ],
-      // socket.io + LiveKit must talk back over secure channels
-      connectSrc: ["'self'", 'wss:', 'https:'],
+      // socket.io + LiveKit signaling. The LiveKit host is pinned from
+      // LIVEKIT_URL when it looks real, so a rogue subdomain cannot
+      // become a signaling endpoint; 'wss:' remains only as a fallback
+      // when the URL is still a placeholder.
+      connectSrc: ["'self'", ...livekitCspOrigins(), 'https:'],
       imgSrc: ["'self'", 'data:'],
       mediaSrc: ["'self'", 'blob:', 'https:'],
       styleSrc: ["'self'", "'unsafe-inline'"],
@@ -546,6 +569,9 @@ app.get('/api/config', (req, res) => {
     maxParticipantsPerRoom: MAX_PARTICIPANTS_PER_ROOM,
     tabHiddenAlertThresholdMs: TAB_HIDDEN_ALERT_THRESHOLD_MS,
     snapshotIntervalMs: SNAPSHOT_INTERVAL_MS,
+    // Public info (also sent in every token response) — the client uses
+    // it to preconnect to the signaling host.
+    livekitUrl: LIVEKIT_URL,
   });
 });
 
@@ -921,6 +947,124 @@ io.on('connection', (socket) => {
       },
       timestamp: Date.now(),
     });
+  });
+
+  // ---- mod:mute / mod:muteAll ------------------------------------
+  // Instructor/admin moderation. Server-side mute of a participant's
+  // audio tracks via LiveKit's MutePublishedTrack API, plus a targeted
+  // socket event so the client UI reflects the forced state. Unmute
+  // requests ask the client to re-enable its own mic (media capture
+  // is user-controlled; the server cannot force it on).
+  async function moderateMute(roomName, identity, mute) {
+    const results = { livekitUpdated: false, tracksMuted: 0 };
+    const svc = getRoomService();
+    if (svc) {
+      try {
+        const participants = await svc.listParticipants(roomName);
+        const target = participants.find((p) => p.identity === identity);
+        if (target && Array.isArray(target.tracks)) {
+          for (const track of target.tracks) {
+            if (track.type === TrackType.AUDIO) {
+              await svc.mutePublishedTrack(roomName, identity, track.sid, mute);
+              results.tracksMuted++;
+            }
+          }
+        }
+        results.livekitUpdated = true;
+      } catch (err) {
+        console.warn(`[mod] mutePublishedTrack failed for ${identity}@${roomName}: ${err.message}`);
+      }
+    }
+    // Targeted client event(s): every socket registered with this
+    // identity in this room.
+    for (const [socketId, sess] of socketToSession.entries()) {
+      if (sess.roomName === roomName && sess.identity === identity) {
+        io.to(socketId).emit('mod:muted', {
+          roomName,
+          muted: Boolean(mute),
+          timestamp: Date.now(),
+        });
+      }
+    }
+    const notice = {
+      roomName,
+      identity,
+      muted: Boolean(mute),
+      enforcedByLiveKit: results.livekitUpdated,
+      timestamp: Date.now(),
+    };
+    emitTelemetry(roomName, 'mod:notice', { action: 'mute', ...notice });
+    io.to(ADMIN_ROOM).emit('mod:notice', { action: 'mute', ...notice });
+    return results;
+  }
+
+  socket.on('mod:mute', (data) => {
+    const isAdmin = socket.handshake.isAdmin === true;
+    const session = socketToSession.get(socket.id);
+    const isInstructor = Boolean(session && session.role === 'instructor');
+    if (!isAdmin && !isInstructor) return;
+    if (!data || typeof data !== 'object') return;
+    const roomName = typeof data.roomName === 'string' ? data.roomName.trim().slice(0, 128) : '';
+    const identity = typeof data.identity === 'string' ? data.identity.trim().slice(0, 128) : '';
+    if (!roomName || !identity) return;
+    if (!isAdmin && session.roomName !== roomName) return;
+    moderateMute(roomName, identity, Boolean(data.mute));
+  });
+
+  socket.on('mod:muteAll', (data) => {
+    const isAdmin = socket.handshake.isAdmin === true;
+    const session = socketToSession.get(socket.id);
+    const isInstructor = Boolean(session && session.role === 'instructor');
+    if (!isAdmin && !isInstructor) return;
+    if (!data || typeof data !== 'object') return;
+    const roomName = typeof data.roomName === 'string' ? data.roomName.trim().slice(0, 128) : '';
+    if (!roomName) return;
+    if (!isAdmin && session.roomName !== roomName) return;
+    const mute = Boolean(data.mute);
+    participantsInRoom(roomName)
+      .filter((p) => p.role !== 'instructor' && p.identity !== session.identity)
+      .forEach((p) => moderateMute(roomName, p.identity, mute));
+  });
+
+  // ---- mod:kick ---------------------------------------------------
+  // Instructor/admin removes a participant: LiveKit removeParticipant
+  // disconnects their media, and a targeted socket event tells our UI
+  // to show the "removed" overlay.
+  socket.on('mod:kick', (data) => {
+    const isAdmin = socket.handshake.isAdmin === true;
+    const session = socketToSession.get(socket.id);
+    const isInstructor = Boolean(session && session.role === 'instructor');
+    if (!isAdmin && !isInstructor) return;
+    if (!data || typeof data !== 'object') return;
+    const roomName = typeof data.roomName === 'string' ? data.roomName.trim().slice(0, 128) : '';
+    const identity = typeof data.identity === 'string' ? data.identity.trim().slice(0, 128) : '';
+    if (!roomName || !identity) return;
+    if (!isAdmin && session.roomName !== roomName) return;
+    if (identity === session.identity) return; // don't kick yourself
+
+    const svc = getRoomService();
+    if (svc) {
+      svc.removeParticipant(roomName, identity).catch((err) => {
+        console.warn(`[mod] removeParticipant failed for ${identity}@${roomName}: ${err.message}`);
+      });
+    }
+    for (const [socketId, sess] of socketToSession.entries()) {
+      if (sess.roomName === roomName && sess.identity === identity) {
+        io.to(socketId).emit('mod:kicked', {
+          roomName,
+          by: session ? session.identity : 'admin',
+          timestamp: Date.now(),
+        });
+      }
+    }
+    const notice = {
+      roomName,
+      identity,
+      kickedBy: session ? session.identity : 'admin',
+      timestamp: Date.now(),
+    };
+    emitTelemetry(roomName, 'mod:notice', { action: 'kick', ...notice });
+    io.to(ADMIN_ROOM).emit('mod:notice', { action: 'kick', ...notice });
   });
 
   // ---- session:end ------------------------------------------------

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0b0f1a" />
   <meta name="description" content="Admin dashboard — monitor active LiveKit sessions and proctoring alerts." />
-  <title>Admin Dashboard · LiveSession Proctor</title>
+  <title>Admin Dashboard | CPRE Nepal</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎓</text></svg>">
 
   <style>
@@ -227,6 +227,14 @@
     .pbtn:hover { background: var(--surface-hover); color: var(--text); }
     .pbtn.on { color: var(--success); border-color: rgba(61,220,151,0.4); }
     .pbtn.small { margin-left: 0; }
+    .mbtn {
+      background: transparent; color: var(--text-dim);
+      border: 1px solid var(--border-strong); border-radius: 999px;
+      padding: 2px 8px; font-size: 10px; cursor: pointer;
+      margin-left: 4px;
+    }
+    .mbtn:hover { background: var(--surface-hover); color: var(--text); }
+    .mbtn.kick:hover { color: var(--danger); border-color: rgba(255,90,106,0.4); }
     .bulk-share { display: inline-flex; gap: 6px; margin-right: 8px; }
     .room-head-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
     .participant strong { color: var(--warning); font-weight: 700; }
@@ -314,7 +322,7 @@
         <div class="logo">A</div>
         <div>
           <div class="title">Admin Dashboard</div>
-          <div class="subtitle">LiveSession Proctor · CPREC Nepal</div>
+          <div class="subtitle">Live Classroom · CPRE Nepal</div>
         </div>
       </div>
       <div class="spacer"></div>

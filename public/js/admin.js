@@ -259,7 +259,11 @@
           const btn = isInstructor
             ? ''
             : '<button type="button" class="pbtn' + (canShare ? ' on' : '') + '" data-room="' + escapeHtml(r.name) + '" data-identity="' + escapeHtml(p.identity) + '" data-allow="' + (canShare ? '0' : '1') + '">' + (canShare ? '🖥️ share on' : '🖥️ allow share') + '</button>';
-          return '<span class="' + cls.join(' ') + '"><span class="pdot"></span>' + label + btn + '</span>';
+          const modBtns = isInstructor
+            ? ''
+            : '<button type="button" class="mbtn" data-room="' + escapeHtml(r.name) + '" data-identity="' + escapeHtml(p.identity) + '" data-muted="' + (r.muted && r.muted.has(p.identity) ? '1' : '0') + '" title="Mute or unmute">' + (r.muted && r.muted.has(p.identity) ? '🔊 unmute' : '🎤 mute') + '</button>' +
+              '<button type="button" class="mbtn kick" data-room="' + escapeHtml(r.name) + '" data-identity="' + escapeHtml(p.identity) + '" data-action="kick" title="Remove from session">👋 kick</button>';
+          return '<span class="' + cls.join(' ') + '"><span class="pdot"></span>' + label + btn + modBtns + '</span>';
         }).join('');
         const bulk =
           '<span class="bulk-share">' +
@@ -306,6 +310,40 @@
       btn.textContent = btn.dataset.all
         ? (allow ? 'Allow all' : 'Revoke all')
         : (allow ? '🖥️ share on' : '🖥️ allow share');
+    });
+
+    // ---- Moderator buttons: mute/unmute + kick ----------------------
+    els.roomsList.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.mbtn');
+      if (!btn) return;
+      const roomName = btn.dataset.room || '';
+      const identity = btn.dataset.identity || '';
+      if (!roomName || !identity) return;
+      if (btn.dataset.action === 'kick') {
+        if (!confirm('Remove ' + identity + ' from this session?')) return;
+        socket.emit('mod:kick', { roomName, identity });
+        btn.textContent = '👋 kicked';
+        btn.disabled = true;
+        return;
+      }
+      const mute = btn.dataset.muted !== '1';
+      socket.emit('mod:mute', { roomName, identity, mute });
+      btn.dataset.muted = mute ? '1' : '0';
+      btn.textContent = mute ? '🔊 unmute' : '🎤 mute';
+    });
+
+    // mod:notice — reflect mute state + drop kicked participants' buttons
+    socket.on('mod:notice', (n) => {
+      if (!n || !n.roomName) return;
+      const room = rooms.get(n.roomName);
+      if (!room) return;
+      if (!room.muted) room.muted = new Set();
+      if (n.action === 'mute') {
+        if (n.muted) room.muted.add(n.identity); else room.muted.delete(n.identity);
+      } else if (n.action === 'kick') {
+        room.muted.delete(n.identity);
+      }
+      renderRooms();
     });
 
     function renderAlerts() {

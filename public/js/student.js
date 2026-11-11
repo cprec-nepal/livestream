@@ -56,6 +56,7 @@
       stripLatest:    $('stripLatest'),
       endedOverlay:   $('endedOverlay'),
       endedBackBtn:   $('endedBackBtn'),
+      reconnectBanner: $('reconnectBanner'),
     };
 
     // --------------------------------------------------------------
@@ -68,6 +69,24 @@
     const isSmallScreen = window.innerWidth < 768
       || Math.min(window.screen.width, window.screen.height) <= 768;
     const isMobile = isMobileUA || isSmallScreen;
+
+    // Mobile users can opt into video (uses more data)
+    let mobileVideoOptIn = false;
+    if (isMobile) {
+      const row = document.getElementById('mobileVideoRow');
+      const box = document.getElementById('mobileVideo');
+      if (row && box) {
+        row.hidden = false;
+        box.addEventListener('change', () => { mobileVideoOptIn = box.checked; });
+      }
+    }
+
+    // WebRTC support check — friendly message in unsupported browsers
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      els.securityWarning.classList.add('show');
+      els.securityWarning.innerHTML =
+        '<strong>⚠️ Live video is not supported by this browser.</strong> Please use the latest version of Chrome, Firefox, or Safari to join the classroom.';
+    }
 
     // Browsers block camera/mic + WebRTC (and crypto.subtle) on insecure
     // origins — e.g. http://192.168.x.x opened from a phone. localhost
@@ -192,7 +211,8 @@
       }
 
       els.joinBtn.disabled = true;
-      els.joinBtn.textContent = 'Connecting…';
+      els.joinBtn.classList.add('loading');
+      els.joinBtn.textContent = 'Joining…';
       setStatus('warn', 'Requesting token');
       myRole = els.instructorRole && els.instructorRole.checked ? 'instructor' : 'student';
 
@@ -208,6 +228,13 @@
         });
         const data = await res.json();
         if (!res.ok) {
+          // Specific, user-friendly messaging per failure type
+          if (data.code === 'SESSION_NOT_STARTED') {
+            throw new Error('The session has not started yet — please wait for your instructor to join.');
+          }
+          if (/instructor code/i.test(data.error || '')) {
+            throw new Error('Invalid instructor code. Please check the code and try again.');
+          }
           throw new Error(data.error || 'Token request failed');
         }
         setStatus('warn', 'Connecting to LiveKit');
@@ -215,8 +242,12 @@
       } catch (err) {
         console.error('[join] failed', err);
         setStatus('err', 'Failed');
-        showJoinError(err.message || 'Could not join the session.');
+        const networkFail = err instanceof TypeError; // fetch() itself failed
+        showJoinError(networkFail
+          ? 'Connection failed. Please check your internet and try again.'
+          : (err.message || 'Could not join the session.'));
         els.joinBtn.disabled = false;
+        els.joinBtn.classList.remove('loading');
         els.joinBtn.textContent = 'Join session';
       }
     }
@@ -254,8 +285,14 @@
       room.on(LiveKit.RoomEvent.LocalTrackPublished, onLocalTrackPublished);
       room.on(LiveKit.RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
       room.on(LiveKit.RoomEvent.Disconnected, onDisconnected);
-      room.on(LiveKit.RoomEvent.Reconnecting, () => setStatus('warn', 'Reconnecting…'));
-      room.on(LiveKit.RoomEvent.Reconnected, () => setStatus('live', 'Live'));
+      room.on(LiveKit.RoomEvent.Reconnecting, () => {
+        setStatus('warn', 'Reconnecting…');
+        els.reconnectBanner.classList.add('show');
+      });
+      room.on(LiveKit.RoomEvent.Reconnected, () => {
+        setStatus('live', 'Live');
+        els.reconnectBanner.classList.remove('show');
+      });
       room.on(LiveKit.RoomEvent.ActiveSpeakerChanged, onActiveSpeakerChanged);
 
       await room.connect(url, token);
@@ -361,6 +398,40 @@
         '<button type="button" class="tc-pin" title="Pin this video to the main stage">📌 Pin</button>' +
         '<button type="button" class="tc-fs" title="Fullscreen">⛶</button>' +
       '</div>';
+
+    // Instructor-only moderation controls on remote tiles
+    const MOD_CONTROLS_HTML =
+      '<div class="mod-controls">' +
+        '<button type="button" class="mc-mute" title="Mute or unmute this participant">🎤</button>' +
+        '<button type="button" class="mc-kick" title="Remove from session">👋</button>' +
+      '</div>';
+
+    function attachModControls(tile, identity) {
+      if (myRole !== 'instructor') return;
+      tile.classList.add('with-mod');
+      const muteBtn = tile.querySelector('.mc-mute');
+      const kickBtn = tile.querySelector('.mc-kick');
+      if (!muteBtn || !kickBtn) return;
+      const refresh = () => {
+        muteBtn.textContent = mutedIdentities.has(identity) ? '🔇' : '🎤';
+        muteBtn.title = mutedIdentities.has(identity)
+          ? 'Ask this participant to unmute'
+          : 'Mute this participant';
+      };
+      refresh();
+      muteBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const mute = !mutedIdentities.has(identity);
+        if (mute) mutedIdentities.add(identity); else mutedIdentities.delete(identity);
+        refresh();
+        socket.emit('mod:mute', { roomName: currentRoom, identity, mute });
+      });
+      kickBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (!confirm('Remove ' + identity + ' from this session?')) return;
+        socket.emit('mod:kick', { roomName: currentRoom, identity });
+      });
+    }
 
     function attachTileControls(tile) {
       const pinBtn = tile.querySelector('.tc-pin');
@@ -472,9 +543,11 @@
         '<video playsinline autoplay></video>' +
         '<div class="label">' + escapeHtml(participant.identity) + '</div>' +
         '<div class="muted-badge">🔇</div>' +
-        TILE_CONTROLS_HTML;
+        TILE_CONTROLS_HTML +
+        MOD_CONTROLS_HTML;
       els.videoGrid.appendChild(tile);
       attachTileControls(tile);
+      attachModControls(tile, participant.identity);
 
       // Attach any already-published tracks
       let hasCameraVideo = false;
@@ -667,6 +740,50 @@
         }
       }
     });
+
+    // --------------------------------------------------------------
+    // Instructor moderation — server-enforced mute + remove
+    // --------------------------------------------------------------
+    // The muted student's mic was toggled server-side. Mute applies
+    // immediately; unmute asks the client to re-enable its mic (media
+    // capture is user-controlled, the server cannot force it on).
+    socket.on('mod:muted', (event) => {
+      if (!event || !room) return;
+      if (event.muted) {
+        room.localParticipant.setMicrophoneEnabled(false).catch(() => {});
+        micEnabled = false;
+        els.micBtn.classList.remove('active');
+        els.micBtn.disabled = true;
+        els.micBtn.textContent = '🎙️ Muted by instructor';
+        addChatMessage({ text: 'Your microphone was muted by the instructor.' }, false, true);
+      } else {
+        els.micBtn.disabled = false;
+        els.micBtn.textContent = '🎙️ Mic on';
+        room.localParticipant.setMicrophoneEnabled(true).then(() => {
+          micEnabled = true;
+          els.micBtn.classList.add('active');
+          els.micBtn.textContent = '🎙️ Mic on';
+        }).catch(() => {
+          addChatMessage({ text: 'The instructor unmuted you — tap the Mic button to speak.' }, false, true);
+        });
+      }
+    });
+
+    // Removed from the session by the instructor
+    socket.on('mod:kicked', (event) => {
+      if (!event) return;
+      if (room) {
+        try { room.disconnect(); } catch (e) { /* already gone */ }
+      }
+      const title = document.getElementById('endedCardTitle');
+      const text = document.getElementById('endedCardText');
+      if (title) title.textContent = 'Removed from session';
+      if (text) text.textContent = 'The instructor has removed you from this session.';
+      els.endedOverlay.hidden = false;
+    });
+
+    // Identities currently force-muted (drives tile button labels)
+    const mutedIdentities = new Set();
 
     // --------------------------------------------------------------
     // Instructor in-class telemetry strip + End session
@@ -988,6 +1105,20 @@
       .then((cfg) => {
         const ms = cfg && parseInt(cfg.snapshotIntervalMs, 10);
         if (Number.isFinite(ms) && ms >= 5000) snapshotIntervalMs = ms;
+        // Preconnect to the LiveKit signaling host — saves ~100-300ms
+        // on the first WebSocket handshake.
+        if (cfg && typeof cfg.livekitUrl === 'string') {
+          try {
+            const u = new URL(cfg.livekitUrl);
+            if (u.protocol === 'wss:' || u.protocol === 'https:') {
+              const link = document.createElement('link');
+              link.rel = 'preconnect';
+              link.href = u.origin;
+              link.crossOrigin = 'anonymous';
+              document.head.appendChild(link);
+            }
+          } catch (e) { /* ignore malformed URL */ }
+        }
       })
       .catch(() => { /* keep default */ });
 
