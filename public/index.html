@@ -561,6 +561,13 @@
       .video-grid { grid-template-columns: 1fr; }
     }
 
+    /* Hidden attribute must always win over any display: rule above.
+       (Author display:grid/flex on .ended-overlay, .instructor-strip,
+       .btn etc. otherwise overrides the UA [hidden] rule — which made
+       the ended overlay visible on page load and leaked instructor
+       controls to students.) */
+    [hidden] { display: none !important; }
+
     /* Hidden canvas used for snapshot hashing */
     #snapshot-canvas { display: none; }
   </style>
