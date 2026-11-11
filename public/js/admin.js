@@ -164,6 +164,20 @@
       renderAlerts();
     });
 
+    // ---- chat:message (room chat feed, monitored) ------------------
+    socket.on('chat:message', (m) => {
+      if (!m || typeof m.text !== 'string') return;
+      alerts.unshift({
+        type: 'chat',
+        roomName: m.roomName,
+        identity: m.identity,
+        text: m.text,
+        timestamp: m.timestamp,
+      });
+      if (alerts.length > 300) alerts.length = 300;
+      renderAlerts();
+    });
+
     // --------------------------------------------------------------
     // Filters
     // --------------------------------------------------------------
@@ -265,6 +279,8 @@
                + (a.note ? ' · ' + escapeHtml(a.note) : '');
         } else if (a.type === 'snapshot_hash') {
           body = 'Hash <strong>' + escapeHtml(a.hash.slice(0, 16)) + '…</strong>';
+        } else if (a.type === 'chat') {
+          body = 'Said: <strong>' + escapeHtml(a.text) + '</strong>';
         }
         return '' +
           '<div class="alert ' + a.type + '">' +

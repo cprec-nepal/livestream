@@ -275,6 +275,47 @@
       color: var(--success);
       border-color: rgba(61,220,151,0.3);
     }
+    .controls .btn.sharing {
+      background: rgba(255,184,0,0.12);
+      color: var(--warning);
+      border-color: rgba(255,184,0,0.35);
+    }
+
+    /* Screen-share tiles */
+    .tile.screen-share { border-color: rgba(255,184,0,0.4); }
+    .tile.screen-share .label { background: rgba(255,184,0,0.85); color: #1a1a1a; }
+
+    /* Chat panel */
+    .chat-body { display: flex; flex-direction: column; }
+    .chat-log {
+      height: 240px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 6px;
+      padding: 2px;
+    }
+    .chat-msg {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px 10px;
+      font-size: 13px; line-height: 1.4;
+      word-break: break-word;
+    }
+    .chat-msg .who { font-weight: 700; color: var(--accent); margin-right: 6px; }
+    .chat-msg.self .who { color: var(--success); }
+    .chat-msg .when { color: var(--text-faint); font-size: 11px; margin-left: 6px; white-space: nowrap; }
+    .chat-msg.system {
+      color: var(--text-dim); font-size: 12px;
+      background: transparent; border-style: dashed; text-align: center;
+    }
+    .chat-input-row { display: flex; gap: 8px; margin-top: 10px; }
+    .chat-input-row input {
+      flex: 1; min-width: 0;
+      background: var(--bg-3); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 9px 12px; font-size: 13px; outline: none;
+    }
+    .chat-input-row input:focus { border-color: var(--accent); }
+    .chat-input-row .btn { padding: 9px 14px; font-size: 13px; }
 
     /* Side panel */
     .side {
@@ -324,6 +365,7 @@
       .video-grid { grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; }
       .tile.audio-only .audio-avatar { width: 48px; height: 48px; }
       .controls .btn { flex: 1 1 calc(50% - 4px); }
+      .chat-log { height: 180px; }
     }
     @media (max-width: 380px) {
       .video-grid { grid-template-columns: 1fr; }
@@ -391,6 +433,8 @@
           <div class="controls">
             <button id="micBtn" class="btn" type="button">🎙️ Mic on</button>
             <button id="camBtn" class="btn" type="button">📷 Cam on</button>
+            <button id="shareBtn" class="btn" type="button" hidden>🖥️ Share screen</button>
+            <button id="chatBtn" class="btn" type="button">💬 Chat</button>
             <button id="leaveBtn" class="btn danger" type="button">Leave</button>
           </div>
         </div>
@@ -416,6 +460,17 @@
               </div>
               <div class="proctor-notice">
                 Tab switches are logged. Snapshot hashes are computed in idle time via <code>requestIdleCallback</code>; only SHA-256 hashes are sent.
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">Chat</div>
+            <div class="panel-body chat-body">
+              <div id="chatLog" class="chat-log"></div>
+              <div class="chat-input-row">
+                <input id="chatInput" type="text" maxlength="500" placeholder="Type a message…" autocomplete="off" />
+                <button id="chatSend" class="btn primary" type="button">Send</button>
               </div>
             </div>
           </div>

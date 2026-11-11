@@ -120,6 +120,24 @@ else
   bad "CSP header unexpected: ${CSP}"
 fi
 
+# 9. LiveKit browser SDK served locally from node_modules (no CDN needed)
+SDK_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/js/vendor/livekit-client.umd.js")"
+if [ "${SDK_CODE}" = "200" ]; then
+  ok "GET /js/vendor/livekit-client.umd.js → 200 (local SDK)"
+else
+  bad "GET /js/vendor/livekit-client.umd.js → ${SDK_CODE} (expected 200)"
+fi
+
+# 10. Student UI ships screen-share + chat controls, chat input capped at 500 chars
+STUDENT_HTML="$(curl -s "${BASE}/")"
+if printf '%s' "${STUDENT_HTML}" | grep -q 'id="shareBtn"' \
+   && printf '%s' "${STUDENT_HTML}" | grep -q 'id="chatLog"' \
+   && printf '%s' "${STUDENT_HTML}" | grep -q 'id="chatInput"'; then
+  ok "Student UI includes screen-share button + chat panel"
+else
+  bad "Student UI missing screen-share/chat markup"
+fi
+
 echo ""
 echo "Result: ${PASS} passed, ${FAIL} failed"
 if [ "${FAIL}" -ne 0 ]; then

@@ -239,6 +239,7 @@
     .alert.tab_switch     { border-left-color: var(--info); }
     .alert.prolonged_absence { border-left-color: var(--danger); background: rgba(255,90,106,0.06); }
     .alert.snapshot_hash  { border-left-color: var(--text-faint); }
+    .alert.chat           { border-left-color: var(--success); }
     .alert .a-head {
       display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
     }
@@ -248,6 +249,7 @@
     .alert.tab_switch .a-type { color: var(--info); }
     .alert.prolonged_absence .a-type { color: var(--danger); }
     .alert.snapshot_hash .a-type { color: var(--text-faint); }
+    .alert.chat .a-type { color: var(--success); }
     .alert .a-time { margin-left: auto; color: var(--text-faint); font-family: var(--mono); font-size: 11px; }
     .alert .a-body { color: var(--text-dim); font-family: var(--mono); font-size: 11px; word-break: break-all; }
     .alert .a-body strong { color: var(--text); }
@@ -366,6 +368,7 @@
             <div class="filter-chip" data-filter="tab_switch">Tab switch</div>
             <div class="filter-chip" data-filter="prolonged_absence">Prolonged absence</div>
             <div class="filter-chip" data-filter="snapshot_hash">Snapshot hashes</div>
+            <div class="filter-chip" data-filter="chat">Chat</div>
           </div>
           <div id="alertsList">
             <div class="empty">

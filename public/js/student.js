@@ -35,6 +35,11 @@
       infoLatency:   $('infoLatency'),
       telemetryLog:  $('telemetryLog'),
       snapshotCanvas: $('snapshot-canvas'),
+      shareBtn:      $('shareBtn'),
+      chatBtn:       $('chatBtn'),
+      chatLog:       $('chatLog'),
+      chatInput:     $('chatInput'),
+      chatSend:      $('chatSend'),
     };
 
     // --------------------------------------------------------------
@@ -81,8 +86,14 @@
     let room = null;           // LiveKit Room instance
     let micEnabled = false;
     let camEnabled = false;
+    let screenSharing = false;
+    let currentRoom = null;    // room name filter for chat messages
     let lastSnapshotHash = null;
     let snapshotTimer = null;
+
+    // Screen sharing needs getDisplayMedia — unsupported on most
+    // mobile browsers, so the button stays hidden there.
+    const canScreenShare = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
 
     // --------------------------------------------------------------
     // Status pill helper
@@ -182,6 +193,8 @@
       room.on(LiveKit.RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
       room.on(LiveKit.RoomEvent.TrackSubscribed, onTrackSubscribed);
       room.on(LiveKit.RoomEvent.TrackUnsubscribed, onTrackUnsubscribed);
+      room.on(LiveKit.RoomEvent.LocalTrackPublished, onLocalTrackPublished);
+      room.on(LiveKit.RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
       room.on(LiveKit.RoomEvent.Disconnected, onDisconnected);
       room.on(LiveKit.RoomEvent.Reconnecting, () => setStatus('warn', 'Reconnecting…'));
       room.on(LiveKit.RoomEvent.Reconnected, () => setStatus('live', 'Live'));
@@ -190,6 +203,7 @@
       await room.connect(url, token);
 
       session = { roomName, identity, role: 'student', isMobile };
+      currentRoom = roomName;
       els.joinScreen.style.display = 'none';
       els.classroom.classList.add('active');
       els.roomName.textContent = roomName;
@@ -201,6 +215,11 @@
 
       // Publish local tracks — mobile starts audio-only
       await publishLocalTracks();
+
+      // Chat reset + notice; screen-share button only where supported
+      els.chatLog.innerHTML = '';
+      addChatMessage({ text: 'Chat started — messages are visible to the session monitor.' }, false, true);
+      if (canScreenShare) els.shareBtn.hidden = false;
 
       // Wire up our socket.io session
       socket.emit('session:join', session);
@@ -267,10 +286,11 @@
         '<div class="muted-badge">🔇</div>';
       els.videoGrid.appendChild(tile);
 
-      // Attach local camera track if present
+      // Attach local camera track if present (never the screen-share track)
       const videoEl = tile.querySelector('video');
-      const camPub = Array.from(room.localParticipant.videoTrackPublications.values())[0];
-      if (camPub && camPub.track) {
+      const camPub = Array.from(room.localParticipant.videoTrackPublications.values())
+        .find((p) => p.track && !isScreenPub(p));
+      if (camPub) {
         camPub.track.attach(videoEl);
         tile.classList.remove('audio-only');
       } else {
@@ -316,26 +336,37 @@
       els.videoGrid.appendChild(tile);
 
       // Attach any already-published tracks
+      let hasCameraVideo = false;
       participant.videoTrackPublications.forEach((pub) => {
-        if (pub.track) {
-          const v = tile.querySelector('video');
-          pub.track.attach(v);
+        if (!pub.track) return;
+        if (isScreenPub(pub)) {
+          const st = ensureScreenTile(participant.sid, participant.identity, false);
+          pub.track.attach(st.querySelector('video'));
+        } else {
+          hasCameraVideo = true;
+          pub.track.attach(tile.querySelector('video'));
         }
       });
       participant.audioTrackPublications.forEach((pub) => {
         if (pub.track) pub.track.attach();
       });
 
-      // If no video, show as audio-only tile
-      if (participant.videoTrackPublications.size === 0) {
+      // If no camera video, show as audio-only tile
+      if (!hasCameraVideo) {
         showTileAsAudioOnly(tile, participant.identity);
       }
       return tile;
     }
 
     function onTrackSubscribed(track, pub, participant) {
-      const tile = ensureRemoteTile(participant);
       if (track.kind === LiveKit.Track.Kind.Video) {
+        // Screen-share tracks get their own highlighted tile
+        if (isScreenPub(pub)) {
+          const st = ensureScreenTile(participant.sid, participant.identity, false);
+          track.attach(st.querySelector('video'));
+          return;
+        }
+        const tile = ensureRemoteTile(participant);
         // Remove audio-only overlay
         tile.classList.remove('audio-only');
         if (!tile.querySelector('video')) {
@@ -345,14 +376,22 @@
             '<div class="muted-badge">🔇</div>';
         }
         track.attach(tile.querySelector('video'));
+        // Mute badge state
+        tile.classList.toggle('is-muted', pub.isMuted || false);
       } else if (track.kind === LiveKit.Track.Kind.Audio) {
         track.attach();
+        const tile = ensureRemoteTile(participant);
+        tile.classList.toggle('is-muted', pub.isMuted || false);
       }
-      // Mute badge state
-      tile.classList.toggle('is-muted', pub.isMuted || false);
     }
 
     function onTrackUnsubscribed(track, pub, participant) {
+      // Screen share ended — drop its tile, keep the camera tile intact
+      if (isScreenPub(pub)) {
+        const st = document.getElementById('tile-screen-' + participant.sid);
+        if (st) st.remove();
+        return;
+      }
       const tile = document.getElementById(tileId(participant.sid));
       if (!tile) return;
       if (track.kind === LiveKit.Track.Kind.Video) {
@@ -362,6 +401,58 @@
         track.detach();
       }
     }
+
+    // --------------------------------------------------------------
+    // Screen sharing (desktop browsers with getDisplayMedia only)
+    // --------------------------------------------------------------
+    function isScreenPub(pub) {
+      return !!pub && pub.source === LiveKit.Track.Source.ScreenShare;
+    }
+
+    function ensureScreenTile(sid, label, self) {
+      const id = 'tile-screen-' + sid;
+      let tile = document.getElementById(id);
+      if (!tile) {
+        tile = document.createElement('div');
+        tile.id = id;
+        tile.className = 'tile remote screen-share';
+        tile.innerHTML =
+          '<video playsinline autoplay></video>' +
+          '<div class="label">🖥️ ' + escapeHtml(label) + (self ? ' (you)' : '') + '</div>';
+        els.videoGrid.appendChild(tile);
+      }
+      return tile;
+    }
+
+    function onLocalTrackPublished(pub) {
+      if (!isScreenPub(pub) || !pub.track) return;
+      screenSharing = true;
+      els.shareBtn.textContent = '🖥️ Stop sharing';
+      els.shareBtn.classList.add('sharing');
+      const tile = ensureScreenTile('local', 'Your screen', true);
+      pub.track.attach(tile.querySelector('video'));
+      logTelemetry('Screen sharing started');
+    }
+
+    function onLocalTrackUnpublished(pub) {
+      if (!isScreenPub(pub)) return;
+      screenSharing = false;
+      els.shareBtn.textContent = '🖥️ Share screen';
+      els.shareBtn.classList.remove('sharing');
+      const tile = document.getElementById('tile-screen-local');
+      if (tile) tile.remove();
+      logTelemetry('Screen sharing stopped');
+    }
+
+    els.shareBtn.addEventListener('click', async () => {
+      if (!room || !canScreenShare) return;
+      try {
+        await room.localParticipant.setScreenShareEnabled(!screenSharing);
+        // Button state updates arrive via Local(Un)Published events above
+      } catch (err) {
+        logTelemetry('Screen share failed: ' + escapeHtml((err && err.message) || 'unknown error'), 'err');
+      }
+    });
 
     function onActiveSpeakerChanged(speakers) {
       // Light visual nudge — bump the first speaker's tile
@@ -379,12 +470,68 @@
       setStatus('err', 'Disconnected');
       logTelemetry('Disconnected from room', 'err');
       stopSnapshotHashing();
+      // Reset share/chat state for the next session
+      screenSharing = false;
+      currentRoom = null;
+      els.shareBtn.hidden = true;
+      els.shareBtn.textContent = '🖥️ Share screen';
+      els.shareBtn.classList.remove('sharing');
     }
 
     function updateParticipantsCount() {
       const n = room ? room.numParticipants : 0;
       els.participantsCount.textContent = n + ' participant' + (n === 1 ? '' : 's');
     }
+
+    // --------------------------------------------------------------
+    // Room chat — relayed by our server over Socket.io. Room and
+    // identity are stamped server-side; the client only sends text.
+    // --------------------------------------------------------------
+    socket.on('chat:message', (msg) => {
+      if (!msg || typeof msg.text !== 'string') return;
+      if (!currentRoom || msg.roomName !== currentRoom) return;
+      const self = msg.socketId && msg.socketId === socket.id;
+      addChatMessage(msg, self, false);
+    });
+
+    socket.on('chat:rate_limited', () => {
+      addChatMessage({ text: 'Sending too fast — please wait a moment.' }, false, true);
+    });
+
+    function sendChat() {
+      const text = els.chatInput.value.trim();
+      if (!text || !currentRoom) return;
+      socket.emit('chat:send', { text: text.slice(0, 500) });
+      els.chatInput.value = '';
+      els.chatInput.focus();
+    }
+
+    function addChatMessage(msg, self, system) {
+      const div = document.createElement('div');
+      div.className = 'chat-msg' + (self ? ' self' : '') + (system ? ' system' : '');
+      if (system) {
+        div.textContent = msg.text;
+      } else {
+        const when = new Date(msg.timestamp || Date.now()).toTimeString().slice(0, 5);
+        div.innerHTML =
+          '<span class="who">' + escapeHtml(self ? 'You' : msg.identity || '?') + '</span>' +
+          escapeHtml(msg.text) +
+          '<span class="when">' + when + '</span>';
+      }
+      els.chatLog.appendChild(div);
+      while (els.chatLog.children.length > 200) {
+        els.chatLog.removeChild(els.chatLog.firstChild);
+      }
+      els.chatLog.scrollTop = els.chatLog.scrollHeight;
+    }
+
+    els.chatSend.addEventListener('click', sendChat);
+    els.chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+    els.chatBtn.addEventListener('click', () => {
+      const panel = els.chatLog.closest('.panel');
+      if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      els.chatInput.focus({ preventScroll: true });
+    });
 
     // --------------------------------------------------------------
     // Mic / cam / leave controls
