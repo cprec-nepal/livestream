@@ -24,6 +24,7 @@ LIVEKIT_API_KEY="test-key" \
 LIVEKIT_API_SECRET="test-secret" \
 ADMIN_PASSWORD_HASH="${ADMIN_HASH}" \
 ADMIN_JWT_SECRET="test-jwt-secret-at-least-32-chars-long" \
+INSTRUCTOR_CODE="test-instructor-code" \
 CORS_ORIGIN="*" \
 NODE_ENV="development" \
 PORT="${PORT}" \
@@ -143,7 +144,7 @@ STUDENT_TOKEN="$(curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"roomName":"grant-room","identity":"stu1","role":"student"}' "${BASE}/api/token" \
   | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).token||'')}catch(e){console.log('')}})")"
 INSTRUCTOR_TOKEN="$(curl -s -X POST -H 'Content-Type: application/json' \
-  -d '{"roomName":"grant-room","identity":"teach1","role":"instructor"}' "${BASE}/api/token" \
+  -d '{"roomName":"grant-room","identity":"teach1","role":"instructor","code":"test-instructor-code"}' "${BASE}/api/token" \
   | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).token||'')}catch(e){console.log('')}})")"
 STUDENT_SOURCES="$(node -e "try{const p=JSON.parse(Buffer.from(process.argv[1].split('.')[1],'base64url').toString());console.log((p.video&&p.video.canPublishSources||[]).join(','))}catch(e){console.log('parse-error')}" "${STUDENT_TOKEN}")"
 INSTRUCTOR_SOURCES="$(node -e "try{const p=JSON.parse(Buffer.from(process.argv[1].split('.')[1],'base64url').toString());console.log((p.video&&p.video.canPublishSources||[]).join(','))}catch(e){console.log('parse-error')}" "${INSTRUCTOR_TOKEN}")"
@@ -162,6 +163,22 @@ if printf '%s' "${STUDENT_JS}" | grep -q 'tc-pin' \
   ok "Student JS ships universal pin/fullscreen tile controls"
 else
   bad "Student JS missing pin/fullscreen tile controls"
+fi
+
+# 13. Instructor role is code-gated: wrong code → 403, correct code → 200
+INST_WRONG="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"roomName":"code-room","identity":"t1","role":"instructor","code":"wrong-code"}' "${BASE}/api/token")"
+INST_RIGHT="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"roomName":"code-room","identity":"t1","role":"instructor","code":"test-instructor-code"}' "${BASE}/api/token")"
+INST_MISSING="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"roomName":"code-room","identity":"t1","role":"instructor"}' "${BASE}/api/token")"
+if [ "${INST_WRONG}" = "403" ] && [ "${INST_MISSING}" = "403" ] && [ "${INST_RIGHT}" = "200" ]; then
+  ok "Instructor code gate: wrong/missing → 403, correct → 200"
+else
+  bad "Instructor code gate: wrong=${INST_WRONG} missing=${INST_MISSING} correct=${INST_RIGHT}"
 fi
 
 echo ""

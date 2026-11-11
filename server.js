@@ -101,6 +101,15 @@ if (ADMIN_PASSWORD_HASH) {
 const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'change-me-in-production';
 const ADMIN_COOKIE_TTL_HOURS = parseInt(process.env.ADMIN_COOKIE_TTL_HOURS || '8', 10);
 
+// Unique code required to join a room with the instructor (host) role.
+// Without it set, instructor joining is disabled entirely (fail closed)
+// — otherwise anyone could tick the instructor box and gain host powers.
+const INSTRUCTOR_CODE = (process.env.INSTRUCTOR_CODE || '').trim();
+const instructorCodeDigest = INSTRUCTOR_CODE
+  ? crypto.createHash('sha256').update(INSTRUCTOR_CODE).digest()
+  : null;
+
+
 const CORS_ORIGIN_RAW = process.env.CORS_ORIGIN || '*';
 const CORS_ORIGINS = CORS_ORIGIN_RAW === '*'
   ? '*'
@@ -516,6 +525,21 @@ app.post('/api/token', tokenLimiter, async (req, res) => {
     const safeIdentity = identity.trim();
     const safeRole = role === 'instructor' ? 'instructor' : 'student';
 
+    // Instructor role requires the unique instructor code (constant-time
+    // compared). Fail closed when no code is configured.
+    if (safeRole === 'instructor') {
+      if (!instructorCodeDigest) {
+        return res.status(503).json({
+          error: 'Instructor joining is disabled (no INSTRUCTOR_CODE configured)',
+        });
+      }
+      const provided = typeof req.body.code === 'string' ? req.body.code.trim() : '';
+      const providedDigest = crypto.createHash('sha256').update(provided).digest();
+      if (!crypto.timingSafeEqual(providedDigest, instructorCodeDigest)) {
+        return res.status(403).json({ error: 'Invalid instructor code' });
+      }
+    }
+
     // Capacity check — only students count against the cap, instructors
     // are always allowed in (they need to start the session).
     if (safeRole === 'student') {
@@ -903,6 +927,7 @@ if (require.main === module) {
     console.log(`  LiveKit URL:    ${LIVEKIT_URL}`);
     console.log(`  Max/room:       ${MAX_PARTICIPANTS_PER_ROOM}`);
     console.log(`  Screen share:   instructor-only until granted (host-controlled)`);
+    console.log(`  Instructor code: ${instructorCodeDigest ? 'required (set)' : 'NOT SET — instructor joining disabled'}`);
     console.log(`  CORS origin:    ${CORS_ORIGINS === '*' ? '*' : CORS_ORIGINS.join(', ')}`);
     console.log(`  Admin auth:     ${ADMIN_AUTH_SOURCE === 'none' ? 'DISABLED (set ADMIN_PASSWORD_HASH)' : 'enabled (' + ADMIN_AUTH_SOURCE + ')'}`);
     if (!useTls) {

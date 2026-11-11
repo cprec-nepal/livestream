@@ -44,6 +44,7 @@ Open `.env` and fill in real values:
 | `LIVEKIT_API_SECRET` | LiveKit API secret |
 | `ADMIN_PASSWORD_HASH` | SHA-256 hex digest of the admin password (see below) |
 | `ADMIN_JWT_SECRET` | Random secret, ≥ 32 chars: `openssl rand -hex 32` |
+| `INSTRUCTOR_CODE` | Unique code instructors must enter to join as host. Empty = instructor joining disabled |
 | `CORS_ORIGIN` | `*` for local dev; exact HTTPS origin in production |
 
 Generate the admin password hash (use a password of ≥ 12 characters):
