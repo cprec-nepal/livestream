@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0b0f1a" />
   <meta name="description" content="Live online session classroom with lightweight proctoring telemetry." />
-  <title>Live Session · Student</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎓</text></svg>">
+  <title>Live Classroom | CPRE Nepal</title>
+  <link rel="icon" type="image/png" href="/img/cprec-logo.png">
 
   <!-- LiveKit client SDK (served locally from node_modules by server.js — no CDN needed) -->
   <script src="/js/vendor/livekit-client.umd.js"></script>
@@ -81,6 +81,11 @@
     .brand {
       display: flex; align-items: center; gap: 10px;
       font-weight: 700; letter-spacing: 0.2px;
+    }
+    .brand .logo-img {
+      width: 34px; height: 34px;
+      object-fit: contain;
+      border-radius: 8px;
     }
     .brand .logo {
       width: 32px; height: 32px; border-radius: 8px;
@@ -285,6 +290,22 @@
     .tile.screen-share { border-color: rgba(255,184,0,0.4); }
     .tile.screen-share .label { background: rgba(255,184,0,0.85); color: #1a1a1a; }
 
+    /* Brand watermark on every video tile (CSS overlay — zero CPU) */
+    .tile { position: relative; }
+    .stream-watermark {
+      position: absolute; bottom: 10px; right: 10px;
+      width: 64px; height: auto;
+      opacity: 0.55;
+      pointer-events: none;
+      user-select: none;
+      z-index: 5;
+      filter: drop-shadow(0 1px 4px rgba(0,0,0,0.5));
+      transition: opacity 0.3s ease;
+    }
+    .tile:hover .stream-watermark { opacity: 0.85; }
+    .tile.pinned .stream-watermark { width: 96px; }
+    .tile:fullscreen .stream-watermark { width: 120px; opacity: 0.7; }
+
     /* Chat panel */
     .chat-body { display: flex; flex-direction: column; }
     .chat-log {
@@ -316,6 +337,133 @@
     }
     .chat-input-row input:focus { border-color: var(--accent); }
     .chat-input-row .btn { padding: 9px 14px; font-size: 13px; }
+
+    /* Collapsible chat + unread badge on the toggle button */
+    .chat-unread {
+      display: inline-grid; place-items: center;
+      min-width: 18px; height: 18px; padding: 0 5px;
+      background: var(--danger); color: #fff;
+      border-radius: 999px; font-size: 11px; font-weight: 700;
+      vertical-align: 1px;
+    }
+
+    /* Instructor-only telemetry strip under the controls */
+    .instructor-strip {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+      margin-top: 10px;
+      padding: 10px 14px;
+      background: var(--bg-2);
+      border: 1px solid rgba(255,184,0,0.3);
+      border-radius: var(--radius);
+      font-size: 12px; color: var(--text-dim);
+    }
+    .instructor-strip strong { color: var(--text); font-size: 13px; }
+    .instructor-strip .strip-item.warn strong { color: var(--warning); }
+    .instructor-strip .strip-item.danger strong { color: var(--danger); }
+    .instructor-strip .latest {
+      margin-left: auto; color: var(--text-faint);
+      max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* Fullscreen video: keep a chat overlay available (move the real
+       chat nodes into the tile while fullscreen) */
+    .tile:fullscreen {
+      background: #000;
+      display: grid; place-items: center;
+    }
+    .tile:fullscreen video { max-width: 100%; max-height: 100%; }
+    .tile .fs-chat {
+      display: none;
+      position: absolute; right: 16px; bottom: 16px;
+      width: 320px; max-height: 45%;
+      background: rgba(7,10,18,0.92);
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      flex-direction: column;
+      overflow: hidden;
+      z-index: 10;
+    }
+    .tile:fullscreen .fs-chat.open { display: flex; }
+    .fs-chat .fs-chat-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; font-size: 13px; font-weight: 700;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .fs-chat .fs-chat-body { display: flex; flex-direction: column; overflow: hidden; padding: 10px; }
+
+    /* Focus visibility for keyboard navigation (a11y) */
+    .btn:focus-visible,
+    input:focus-visible,
+    .filter-chip:focus-visible,
+    .tile-controls button:focus-visible,
+    .pbtn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* Join button loading spinner */
+    .btn.loading { position: relative; color: transparent !important; pointer-events: none; }
+    .btn.loading::after {
+      content: '';
+      position: absolute; top: 50%; left: 50%;
+      width: 16px; height: 16px; margin: -8px 0 0 -8px;
+      border: 2px solid rgba(255,255,255,0.35);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Reconnecting banner */
+    .reconnect-banner {
+      display: none;
+      background: rgba(255,184,0,0.12);
+      border: 1px solid rgba(255,184,0,0.4);
+      color: var(--warning);
+      border-radius: 10px;
+      padding: 10px 14px; font-size: 13px;
+      margin-bottom: 12px;
+      align-items: center; gap: 8px;
+    }
+    .reconnect-banner.show { display: flex; }
+    .reconnect-banner .pulse {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--warning);
+      animation: pulse 1.2s ease infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+    /* Moderator controls on remote tiles (instructor only) */
+    .tile .mod-controls {
+      position: absolute; left: 8px; top: 8px;
+      display: none; gap: 6px; z-index: 4;
+    }
+    .tile.remote.with-mod .mod-controls { display: flex; }
+    .tile .mod-controls button {
+      background: rgba(7,10,18,0.75); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: 8px;
+      padding: 4px 8px; font-size: 12px; cursor: pointer;
+    }
+    .tile .mod-controls button:hover { background: rgba(7,10,18,0.95); }
+
+    /* Session-ended overlay */
+    .ended-overlay {
+      position: fixed; inset: 0; z-index: 50;
+      background: rgba(4,6,12,0.9);
+      display: grid; place-items: center;
+      backdrop-filter: blur(4px);
+    }
+    .ended-card {
+      background: var(--bg-2);
+      border: 1px solid var(--border-strong);
+      border-radius: 16px;
+      padding: 32px 36px; text-align: center;
+      max-width: 380px;
+    }
+    .ended-card .ended-icon { font-size: 40px; margin-bottom: 8px; }
+    .ended-card h2 { margin: 0 0 8px; font-size: 20px; }
+    .ended-card p { color: var(--text-dim); font-size: 13px; margin: 0 0 18px; line-height: 1.5; }
 
     /* Side panel */
     .side {
@@ -422,10 +570,10 @@
     <!-- ===== Top bar ===== -->
     <header class="topbar">
       <div class="brand">
-        <div class="logo">L</div>
+        <img class="logo-img" src="/img/cprec-logo.png" alt="CPRE Nepal logo">
         <div>
-          <div class="title">LiveSession · Proctor</div>
-          <div class="subtitle">CPREC Nepal</div>
+          <div class="title">Live Classroom</div>
+          <div class="subtitle">CPRE Nepal</div>
         </div>
       </div>
       <div class="spacer"></div>
@@ -434,12 +582,17 @@
     </header>
 
     <!-- ===== Join screen ===== -->
-    <section id="joinScreen" class="join-card">
-      <h1>Join the live session</h1>
-      <p class="lead">Enter your name and the session room. Mobile devices join audio-only by default to save bandwidth.</p>
+      <!-- Reconnecting indicator -->
+      <div id="reconnectBanner" class="reconnect-banner" role="alert" aria-live="polite">
+        <span class="pulse"></span> Reconnecting to the session… your video will resume automatically.
+      </div>
 
-      <div id="securityWarning" class="security-warning">
-        <strong>⚠️ Insecure connection.</strong> Cameras, microphones and live video are blocked by your browser on non-HTTPS pages. Open this page over <code>https://</code> (or <code>localhost</code>) to join properly.
+      <section id="joinScreen" class="join-card">
+      <h1>Join the live session</h1>
+      <p class="lead">Enter your name and the session room. Sessions open when your instructor joins — mobile devices join audio-only by default.</p>
+
+      <div id="securityWarning" class="security-warning" role="alert" aria-live="polite">
+        <strong>⚠️ Insecure connection.</strong> Cameras, microphones and live video are blocked by your browser on non-HTTPS pages. Open this page over <code>https://</code> (or <code>localhost</code>) to join properly. If you are <em>already</em> using HTTPS, this may be caused by browser privacy settings or an embedded frame — please open this page directly in a new tab.
       </div>
 
       <div class="field">
@@ -449,6 +602,11 @@
       <div class="field">
         <label for="room">Room name</label>
         <input id="room" type="text" placeholder="e.g. math-101" />
+      </div>
+
+      <div class="role-row" id="mobileVideoRow" hidden>
+        <input id="mobileVideo" type="checkbox" />
+        <label for="mobileVideo">Enable video on mobile (uses more data)</label>
       </div>
 
       <div class="role-row">
@@ -464,7 +622,7 @@
         <button id="joinBtn" class="btn primary" type="button">Join session</button>
       </div>
 
-      <div id="joinError" class="error-msg"></div>
+      <div id="joinError" class="error-msg" role="alert" aria-live="polite"></div>
     </section>
 
     <!-- ===== Classroom (post-join) ===== -->
@@ -489,12 +647,22 @@
             <button id="micBtn" class="btn" type="button">🎙️ Mic on</button>
             <button id="camBtn" class="btn" type="button">📷 Cam on</button>
             <button id="shareBtn" class="btn" type="button" hidden>🖥️ Share screen</button>
-            <button id="chatBtn" class="btn" type="button">💬 Chat</button>
+            <button id="chatBtn" class="btn" type="button">💬 Chat <span id="chatUnread" class="chat-unread" hidden>0</span></button>
+            <button id="endBtn" class="btn danger" type="button" hidden>⏹ End session</button>
             <button id="leaveBtn" class="btn danger" type="button">Leave</button>
+          </div>
+
+          <!-- Instructor-only live strip (students never see this) -->
+          <div id="instructorStrip" class="instructor-strip" hidden>
+            <span class="strip-item"><strong id="stripParticipants">0</strong> participants</span>
+            <span class="strip-item"><strong id="stripHidden">0</strong> hidden now</span>
+            <span class="strip-item warn"><strong id="stripTabSwitches">0</strong> tab switches</span>
+            <span class="strip-item danger"><strong id="stripAbsences">0</strong> absences</span>
+            <span class="strip-item latest" id="stripLatest">monitoring…</span>
           </div>
         </div>
 
-        <!-- Side panel: session info + telemetry log -->
+        <!-- Side panel: session info + chat (telemetry is instructor/admin-only) -->
         <aside class="side">
           <div class="panel">
             <div class="panel-head">Session info</div>
@@ -507,7 +675,7 @@
             </div>
           </div>
 
-          <div class="panel">
+          <div class="panel" id="telemetryPanel" hidden>
             <div class="panel-head">Telemetry</div>
             <div class="panel-body">
               <div id="telemetryLog" class="telemetry-log">
@@ -519,9 +687,9 @@
             </div>
           </div>
 
-          <div class="panel">
+          <div class="panel" id="chatPanel">
             <div class="panel-head">Chat</div>
-            <div class="panel-body chat-body">
+            <div class="panel-body chat-body" id="chatBody">
               <div id="chatLog" class="chat-log"></div>
               <div class="chat-input-row">
                 <input id="chatInput" type="text" maxlength="500" placeholder="Type a message…" autocomplete="off" />
@@ -530,6 +698,16 @@
             </div>
           </div>
         </aside>
+      </div>
+
+      <!-- Shown to everyone when the instructor ends the session -->
+      <div id="endedOverlay" class="ended-overlay" hidden>
+        <div class="ended-card">
+          <div class="ended-icon">🏫</div>
+          <h2 id="endedCardTitle">Session ended</h2>
+          <p id="endedCardText">The instructor has ended this session. You can close this page or join another room.</p>
+          <button id="endedBackBtn" class="btn primary" type="button">Back to join</button>
+        </div>
       </div>
     </section>
   </div>

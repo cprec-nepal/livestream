@@ -44,6 +44,19 @@
       instructorRole: $('instructorRole'),
       instructorCodeField: $('instructorCodeField'),
       instructorCode: $('instructorCode'),
+      chatPanel:      $('chatPanel'),
+      chatBody:       $('chatBody'),
+      chatUnread:     $('chatUnread'),
+      endBtn:         $('endBtn'),
+      instructorStrip: $('instructorStrip'),
+      stripParticipants: $('stripParticipants'),
+      stripHidden:    $('stripHidden'),
+      stripTabSwitches: $('stripTabSwitches'),
+      stripAbsences:  $('stripAbsences'),
+      stripLatest:    $('stripLatest'),
+      endedOverlay:   $('endedOverlay'),
+      endedBackBtn:   $('endedBackBtn'),
+      reconnectBanner: $('reconnectBanner'),
     };
 
     // --------------------------------------------------------------
@@ -56,6 +69,24 @@
     const isSmallScreen = window.innerWidth < 768
       || Math.min(window.screen.width, window.screen.height) <= 768;
     const isMobile = isMobileUA || isSmallScreen;
+
+    // Mobile users can opt into video (uses more data)
+    let mobileVideoOptIn = false;
+    if (isMobile) {
+      const row = document.getElementById('mobileVideoRow');
+      const box = document.getElementById('mobileVideo');
+      if (row && box) {
+        row.hidden = false;
+        box.addEventListener('change', () => { mobileVideoOptIn = box.checked; });
+      }
+    }
+
+    // WebRTC support check — friendly message in unsupported browsers
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      els.securityWarning.classList.add('show');
+      els.securityWarning.innerHTML =
+        '<strong>⚠️ Live video is not supported by this browser.</strong> Please use the latest version of Chrome, Firefox, or Safari to join the classroom.';
+    }
 
     // Browsers block camera/mic + WebRTC (and crypto.subtle) on insecure
     // origins — e.g. http://192.168.x.x opened from a phone. localhost
@@ -124,6 +155,13 @@
     let myRole = 'student';
     let shareAllowed = false;
 
+    // Chat panel state (collapsible; moves into fullscreen overlay)
+    let chatOpen = true;
+    let unreadCount = 0;
+
+    // Instructor strip stats (reset per session)
+    let stripStats = { tabSwitches: 0, absences: 0 };
+
     function updateShareButton() {
       const visible = Boolean(room) && canScreenShare && (myRole === 'instructor' || shareAllowed);
       els.shareBtn.hidden = !visible;
@@ -173,7 +211,8 @@
       }
 
       els.joinBtn.disabled = true;
-      els.joinBtn.textContent = 'Connecting…';
+      els.joinBtn.classList.add('loading');
+      els.joinBtn.textContent = 'Joining…';
       setStatus('warn', 'Requesting token');
       myRole = els.instructorRole && els.instructorRole.checked ? 'instructor' : 'student';
 
@@ -189,6 +228,13 @@
         });
         const data = await res.json();
         if (!res.ok) {
+          // Specific, user-friendly messaging per failure type
+          if (data.code === 'SESSION_NOT_STARTED') {
+            throw new Error('The session has not started yet — please wait for your instructor to join.');
+          }
+          if (/instructor code/i.test(data.error || '')) {
+            throw new Error('Invalid instructor code. Please check the code and try again.');
+          }
           throw new Error(data.error || 'Token request failed');
         }
         setStatus('warn', 'Connecting to LiveKit');
@@ -196,8 +242,12 @@
       } catch (err) {
         console.error('[join] failed', err);
         setStatus('err', 'Failed');
-        showJoinError(err.message || 'Could not join the session.');
+        const networkFail = err instanceof TypeError; // fetch() itself failed
+        showJoinError(networkFail
+          ? 'Connection failed. Please check your internet and try again.'
+          : (err.message || 'Could not join the session.'));
         els.joinBtn.disabled = false;
+        els.joinBtn.classList.remove('loading');
         els.joinBtn.textContent = 'Join session';
       }
     }
@@ -235,8 +285,14 @@
       room.on(LiveKit.RoomEvent.LocalTrackPublished, onLocalTrackPublished);
       room.on(LiveKit.RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
       room.on(LiveKit.RoomEvent.Disconnected, onDisconnected);
-      room.on(LiveKit.RoomEvent.Reconnecting, () => setStatus('warn', 'Reconnecting…'));
-      room.on(LiveKit.RoomEvent.Reconnected, () => setStatus('live', 'Live'));
+      room.on(LiveKit.RoomEvent.Reconnecting, () => {
+        setStatus('warn', 'Reconnecting…');
+        els.reconnectBanner.classList.add('show');
+      });
+      room.on(LiveKit.RoomEvent.Reconnected, () => {
+        setStatus('live', 'Live');
+        els.reconnectBanner.classList.remove('show');
+      });
       room.on(LiveKit.RoomEvent.ActiveSpeakerChanged, onActiveSpeakerChanged);
 
       await room.connect(url, token);
@@ -257,12 +313,35 @@
 
       // Chat reset + notice; share button per host policy
       els.chatLog.innerHTML = '';
-      addChatMessage({ text: 'Chat started — messages are visible to the session monitor.' }, false, true);
+      unreadCount = 0;
+      updateChatBadge();
+      setChatOpen(true);
+      addChatMessage(
+        { text: myRole === 'instructor'
+          ? 'Chat started — messages are visible to the session monitor.'
+          : 'Chat started.' },
+        false,
+        true
+      );
       shareAllowed = false; // fresh room state; instructors bypass below
       updateShareButton();
 
+      // Role-scoped UI: students see no proctoring UI at all;
+      // instructors get the live strip + End session control.
+      const isInstructor = myRole === 'instructor';
+      els.telemetryPanel.hidden = !isInstructor;
+      els.instructorStrip.hidden = !isInstructor;
+      els.endBtn.hidden = !isInstructor;
+      if (isInstructor) {
+        stripStats = { tabSwitches: 0, absences: 0 };
+        els.stripTabSwitches.textContent = '0';
+        els.stripAbsences.textContent = '0';
+        els.stripLatest.textContent = 'monitoring…';
+      }
+
       // Wire up our socket.io session
       socket.emit('session:join', session);
+      if (isInstructor) socket.emit('telemetry:subscribe');
 
       // Update participant counter
       updateParticipantsCount();
@@ -314,11 +393,49 @@
     // Pin/fullscreen controls — available on EVERY video tile for every
     // participant. Pinning is purely local: each viewer pins what they
     // see without affecting anyone else.
+    // Brand watermark — one <img> per tile (CSS overlay, zero CPU cost,
+    // survives in fullscreen since the tile itself is fullscreened).
+    const WATERMARK_HTML = '<img class="stream-watermark" src="/img/cprec-logo.png" alt="CPRE Nepal" draggable="false">';
+
     const TILE_CONTROLS_HTML =
       '<div class="tile-controls">' +
         '<button type="button" class="tc-pin" title="Pin this video to the main stage">📌 Pin</button>' +
         '<button type="button" class="tc-fs" title="Fullscreen">⛶</button>' +
       '</div>';
+
+    // Instructor-only moderation controls on remote tiles
+    const MOD_CONTROLS_HTML =
+      '<div class="mod-controls">' +
+        '<button type="button" class="mc-mute" title="Mute or unmute this participant">🎤</button>' +
+        '<button type="button" class="mc-kick" title="Remove from session">👋</button>' +
+      '</div>';
+
+    function attachModControls(tile, identity) {
+      if (myRole !== 'instructor') return;
+      tile.classList.add('with-mod');
+      const muteBtn = tile.querySelector('.mc-mute');
+      const kickBtn = tile.querySelector('.mc-kick');
+      if (!muteBtn || !kickBtn) return;
+      const refresh = () => {
+        muteBtn.textContent = mutedIdentities.has(identity) ? '🔇' : '🎤';
+        muteBtn.title = mutedIdentities.has(identity)
+          ? 'Ask this participant to unmute'
+          : 'Mute this participant';
+      };
+      refresh();
+      muteBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const mute = !mutedIdentities.has(identity);
+        if (mute) mutedIdentities.add(identity); else mutedIdentities.delete(identity);
+        refresh();
+        socket.emit('mod:mute', { roomName: currentRoom, identity, mute });
+      });
+      kickBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (!confirm('Remove ' + identity + ' from this session?')) return;
+        socket.emit('mod:kick', { roomName: currentRoom, identity });
+      });
+    }
 
     function attachTileControls(tile) {
       const pinBtn = tile.querySelector('.tc-pin');
@@ -332,12 +449,10 @@
       pinBtn.addEventListener('click', () =>
         setPinned(tile.id === pinnedTileId ? null : tile.id));
       fsBtn.addEventListener('click', () => {
-        const video = tile.querySelector('video');
-        if (!video) return;
         if (document.fullscreenElement) {
           document.exitFullscreen().catch(() => {});
-        } else if (video.requestFullscreen) {
-          video.requestFullscreen().catch(() => {});
+        } else {
+          enterFullscreenWithChat(tile);
         }
       });
     }
@@ -378,7 +493,8 @@
         '<video muted playsinline autoplay></video>' +
         '<div class="label">You</div>' +
         '<div class="muted-badge">🔇</div>' +
-        TILE_CONTROLS_HTML;
+        TILE_CONTROLS_HTML +
+        WATERMARK_HTML;
       els.videoGrid.appendChild(tile);
       attachTileControls(tile);
 
@@ -401,7 +517,8 @@
       tile.innerHTML =
         '<div class="audio-avatar">' + initial + '</div>' +
         '<div class="label">' + escapeHtml(label) + '</div>' +
-        '<div class="muted-badge">🔇</div>';
+        '<div class="muted-badge">🔇</div>' +
+        WATERMARK_HTML;
     }
 
     function onParticipantConnected(participant) {
@@ -432,9 +549,12 @@
         '<video playsinline autoplay></video>' +
         '<div class="label">' + escapeHtml(participant.identity) + '</div>' +
         '<div class="muted-badge">🔇</div>' +
-        TILE_CONTROLS_HTML;
+        TILE_CONTROLS_HTML +
+        MOD_CONTROLS_HTML +
+        WATERMARK_HTML;
       els.videoGrid.appendChild(tile);
       attachTileControls(tile);
+      attachModControls(tile, participant.identity);
 
       // Attach any already-published tracks
       let hasCameraVideo = false;
@@ -475,8 +595,11 @@
             '<video playsinline autoplay></video>' +
             '<div class="label">' + escapeHtml(participant.identity) + '</div>' +
             '<div class="muted-badge">🔇</div>' +
-            TILE_CONTROLS_HTML;
+            TILE_CONTROLS_HTML +
+            MOD_CONTROLS_HTML +
+            WATERMARK_HTML;
           attachTileControls(tile);
+          attachModControls(tile, participant.identity);
         }
         track.attach(tile.querySelector('video'));
         // Mute badge state
@@ -525,7 +648,8 @@
         tile.innerHTML =
           '<video playsinline autoplay></video>' +
           '<div class="label">🖥️ ' + escapeHtml(label) + (self ? ' (you)' : '') + '</div>' +
-          TILE_CONTROLS_HTML;
+          TILE_CONTROLS_HTML +
+          WATERMARK_HTML;
         els.videoGrid.appendChild(tile);
         attachTileControls(tile);
       }
@@ -629,6 +753,158 @@
     });
 
     // --------------------------------------------------------------
+    // Instructor moderation — server-enforced mute + remove
+    // --------------------------------------------------------------
+    // The muted student's mic was toggled server-side. Mute applies
+    // immediately; unmute asks the client to re-enable its mic (media
+    // capture is user-controlled, the server cannot force it on).
+    socket.on('mod:muted', (event) => {
+      if (!event || !room) return;
+      if (event.muted) {
+        room.localParticipant.setMicrophoneEnabled(false).catch(() => {});
+        micEnabled = false;
+        els.micBtn.classList.remove('active');
+        els.micBtn.disabled = true;
+        els.micBtn.textContent = '🎙️ Muted by instructor';
+        addChatMessage({ text: 'Your microphone was muted by the instructor.' }, false, true);
+      } else {
+        els.micBtn.disabled = false;
+        els.micBtn.textContent = '🎙️ Mic on';
+        room.localParticipant.setMicrophoneEnabled(true).then(() => {
+          micEnabled = true;
+          els.micBtn.classList.add('active');
+          els.micBtn.textContent = '🎙️ Mic on';
+        }).catch(() => {
+          addChatMessage({ text: 'The instructor unmuted you — tap the Mic button to speak.' }, false, true);
+        });
+      }
+    });
+
+    // Removed from the session by the instructor
+    socket.on('mod:kicked', (event) => {
+      if (!event) return;
+      if (room) {
+        try { room.disconnect(); } catch (e) { /* already gone */ }
+      }
+      const title = document.getElementById('endedCardTitle');
+      const text = document.getElementById('endedCardText');
+      if (title) title.textContent = 'Removed from session';
+      if (text) text.textContent = 'The instructor has removed you from this session.';
+      els.endedOverlay.hidden = false;
+    });
+
+    // Identities currently force-muted (drives tile button labels)
+    const mutedIdentities = new Set();
+
+    // --------------------------------------------------------------
+    // Instructor in-class telemetry strip + End session
+    // (instructor-only; students receive no such events)
+    // --------------------------------------------------------------
+    // Track hidden state per identity from visibility events
+    let hiddenMap = new Map();
+    let hiddenCount = 0;
+
+    function updateStripCounts() {
+      hiddenCount = 0;
+      hiddenMap.forEach((v) => { if (v) hiddenCount++; });
+      els.stripHidden.textContent = String(hiddenCount);
+      els.stripParticipants.textContent = String(room ? room.numParticipants : 0);
+    }
+
+    socket.on('telemetry:event', (event) => {
+      if (!event || !currentRoom || event.roomName !== currentRoom) return;
+      if (myRole !== 'instructor') return; // belt & braces; server gates too
+
+      switch (event.type) {
+        case 'session:join':
+          hiddenMap.set(event.identity, false);
+          updateStripCounts();
+          els.stripLatest.textContent = event.identity + ' joined';
+          break;
+        case 'session:leave':
+          hiddenMap.delete(event.identity);
+          updateStripCounts();
+          els.stripLatest.textContent = (event.identity || 'Someone') + ' left';
+          break;
+        case 'telemetry:visibility':
+          hiddenMap.set(event.identity, Boolean(event.hidden));
+          updateStripCounts();
+          els.stripLatest.textContent = (event.identity || '?') + (event.hidden ? ' is hidden' : ' is back');
+          break;
+        case 'proctor:alert': {
+          const dur = event.durationMs || 0;
+          if ((event.note && /disconnected/.test(event.note)) || dur >= 10000) {
+            stripStats.absences++;
+          } else {
+            stripStats.tabSwitches++;
+          }
+          els.stripTabSwitches.textContent = String(stripStats.tabSwitches);
+          els.stripAbsences.textContent = String(stripStats.absences);
+          els.stripLatest.textContent = (event.identity || '?') + ' · ' + (dur / 1000).toFixed(1) + 's away';
+          break;
+        }
+        case 'telemetry:snapshot_hash':
+          els.stripLatest.textContent = (event.identity || '?') + ' snapshot ok';
+          break;
+        default:
+          break;
+      }
+    });
+
+    // End session — instructor only, with confirmation
+    els.endBtn.addEventListener('click', () => {
+      if (!currentRoom) return;
+      if (!confirm('End the session for EVERYONE? Students will be disconnected.')) return;
+      socket.emit('session:end', { roomName: currentRoom });
+    });
+
+    // Everyone: the instructor ended the session — leave LiveKit and
+    // show the overlay.
+    socket.on('session:ended', (event) => {
+      if (!event || (currentRoom && event.roomName !== currentRoom)) return;
+      if (room) {
+        try { room.disconnect(); } catch (e) { /* already gone */ }
+      }
+      els.endedOverlay.hidden = false;
+    });
+
+    els.endedBackBtn.addEventListener('click', () => {
+      els.endedOverlay.hidden = true;
+      // Reset to the join screen for the next session
+      els.classroom.classList.remove('active');
+      els.joinScreen.style.display = '';
+      setStatus('idle', 'Idle');
+      if (typeof onDisconnected === 'function') onDisconnected();
+    });
+
+
+    // End session — instructor only, with confirmation
+    els.endBtn.addEventListener('click', () => {
+      if (!currentRoom) return;
+      if (!confirm('End the session for EVERYONE? Students will be disconnected.')) return;
+      socket.emit('session:end', { roomName: currentRoom });
+    });
+
+    // Everyone: the instructor ended the session — leave LiveKit and
+    // show the overlay.
+    socket.on('session:ended', (event) => {
+      if (!event || (currentRoom && event.roomName !== currentRoom)) return;
+      if (room) {
+        try { room.disconnect(); } catch (e) { /* already gone */ }
+      }
+      els.endedOverlay.hidden = false;
+    });
+
+    els.endedBackBtn.addEventListener('click', () => {
+      els.endedOverlay.hidden = true;
+      // Reset to the join screen for the next session
+      els.classroom.classList.remove('active');
+      els.joinScreen.style.display = '';
+      setStatus('idle', 'Idle');
+      if (typeof onDisconnected === 'function') onDisconnected();
+    });
+
+    // --------------------------------------------------------------
     // Room chat — relayed by our server over Socket.io. Room and
     // identity are stamped server-side; the client only sends text.
     // --------------------------------------------------------------
@@ -642,6 +918,21 @@
     socket.on('chat:rate_limited', () => {
       addChatMessage({ text: 'Sending too fast — please wait a moment.' }, false, true);
     });
+
+    // ---- Chat open/close (sidebar) + unread badge ------------------
+    function setChatOpen(open) {
+      chatOpen = open;
+      els.chatBody.style.display = open ? 'flex' : 'none';
+      if (open) {
+        unreadCount = 0;
+        updateChatBadge();
+      }
+    }
+
+    function updateChatBadge() {
+      els.chatUnread.hidden = chatOpen || unreadCount === 0;
+      els.chatUnread.textContent = unreadCount > 9 ? '9+' : String(unreadCount);
+    }
 
     function sendChat() {
       const text = els.chatInput.value.trim();
@@ -668,14 +959,70 @@
         els.chatLog.removeChild(els.chatLog.firstChild);
       }
       els.chatLog.scrollTop = els.chatLog.scrollHeight;
+      if (!chatOpen && !self) {
+        unreadCount++;
+        updateChatBadge();
+      }
     }
 
     els.chatSend.addEventListener('click', sendChat);
     els.chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
     els.chatBtn.addEventListener('click', () => {
-      const panel = els.chatLog.closest('.panel');
-      if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      els.chatInput.focus({ preventScroll: true });
+      setChatOpen(!chatOpen);
+      if (chatOpen) {
+        const panel = els.chatLog.closest('.panel');
+        if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        els.chatInput.focus({ preventScroll: true });
+      }
+    });
+
+    // ---- Chat inside fullscreen video ------------------------------
+    // The fullscreen element is the TILE, and the real chat nodes
+    // (log + input row) move into an overlay inside it for the
+    // duration — same history, no duplicates, returned on exit.
+    const fsChat = document.createElement('div');
+    fsChat.className = 'fs-chat open';
+    fsChat.innerHTML =
+      '<div class="fs-chat-head"><span>💬 Chat</span><span class="fs-chat-toggle">▼</span></div>' +
+      '<div class="fs-chat-body"></div>';
+    const fsChatBody = fsChat.querySelector('.fs-chat-body');
+    const fsChatHead = fsChat.querySelector('.fs-chat-head');
+    let fsChatOpen = true;
+    let fullscreenTile = null;
+    let chatHome = els.chatBody; // where the chat nodes live when not fullscreen
+
+    fsChatHead.addEventListener('click', () => {
+      fsChatOpen = !fsChatOpen;
+      fsChat.classList.toggle('open', fsChatOpen);
+      fsChat.querySelector('.fs-chat-toggle').textContent = fsChatOpen ? '▼' : '▲';
+    });
+
+    function moveChatInto(target) { target.appendChild(els.chatLog); target.appendChild(els.chatInput.closest('.chat-input-row')); }
+    function moveChatHome() { moveChatInto(chatHome); }
+
+    function enterFullscreenWithChat(tile) {
+      if (!tile.requestFullscreen) {
+        // Fallback: video-only fullscreen (no chat overlay possible)
+        const video = tile.querySelector('video');
+        if (video && video.requestFullscreen) video.requestFullscreen().catch(() => {});
+        return;
+      }
+      fullscreenTile = tile;
+      tile.appendChild(fsChat);
+      moveChatInto(fsChatBody);
+      fsChatOpen = true;
+      fsChat.classList.add('open');
+      tile.requestFullscreen().catch(() => {
+        fullscreenTile = null;
+        moveChatHome();
+      });
+    }
+
+    document.addEventListener('fullscreenchange', () => {
+      if (!document.fullscreenElement && fullscreenTile) {
+        fullscreenTile = null;
+        moveChatHome();
+      }
     });
 
     // --------------------------------------------------------------
@@ -769,6 +1116,20 @@
       .then((cfg) => {
         const ms = cfg && parseInt(cfg.snapshotIntervalMs, 10);
         if (Number.isFinite(ms) && ms >= 5000) snapshotIntervalMs = ms;
+        // Preconnect to the LiveKit signaling host — saves ~100-300ms
+        // on the first WebSocket handshake.
+        if (cfg && typeof cfg.livekitUrl === 'string') {
+          try {
+            const u = new URL(cfg.livekitUrl);
+            if (u.protocol === 'wss:' || u.protocol === 'https:') {
+              const link = document.createElement('link');
+              link.rel = 'preconnect';
+              link.href = u.origin;
+              link.crossOrigin = 'anonymous';
+              document.head.appendChild(link);
+            }
+          } catch (e) { /* ignore malformed URL */ }
+        }
       })
       .catch(() => { /* keep default */ });
 

@@ -25,6 +25,7 @@ LIVEKIT_API_SECRET="test-secret" \
 ADMIN_PASSWORD_HASH="${ADMIN_HASH}" \
 ADMIN_JWT_SECRET="test-jwt-secret-at-least-32-chars-long" \
 INSTRUCTOR_CODE="test-instructor-code" \
+REQUIRE_INSTRUCTOR_START="false" \
 CORS_ORIGIN="*" \
 NODE_ENV="development" \
 PORT="${PORT}" \
@@ -111,12 +112,12 @@ else
   bad "POST /api/token empty body → ${TOKEN_CODE} (expected 400)"
 fi
 
-# 8. CSP header allows jsDelivr + wss/https and blocks eval
+# 8. CSP header pins the LiveKit origin + blocks eval
 CSP="$(curl -s -I "${BASE}/" | grep -i 'content-security-policy' || true)"
-if printf '%s' "${CSP}" | grep -q 'cdn.jsdelivr.net' \
-   && printf '%s' "${CSP}" | grep -q 'wss:' \
+if printf '%s' "${CSP}" | grep -q 'wss://test.livekit.cloud' \
+   && printf '%s' "${CSP}" | grep -q 'cdn.jsdelivr.net' \
    && ! printf '%s' "${CSP}" | grep -q 'unsafe-eval'; then
-  ok "CSP allows cdn.jsdelivr.net + wss:/https:, no unsafe-eval"
+  ok "CSP pins LiveKit origin + allows jsDelivr, no unsafe-eval"
 else
   bad "CSP header unexpected: ${CSP}"
 fi
@@ -156,7 +157,18 @@ else
   bad "JWT grants unexpected — student[${STUDENT_SOURCES}] instructor[${INSTRUCTOR_SOURCES}]"
 fi
 
-# 12. Pin/fullscreen controls ship for every video tile (all participants)
+# 12. Logo asset served locally + watermarks wired into tiles
+LOGO_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/img/cprec-logo.png")"
+STUDENT_JS="$(curl -s "${BASE}/js/student.js")"
+if [ "${LOGO_CODE}" = "200" ] \
+   && printf '%s' "${STUDENT_JS}" | grep -q 'stream-watermark' \
+   && printf '%s' "$(curl -s "${BASE}/")" | grep -q 'logo-img'; then
+  ok "CPRE Nepal logo served locally; header + tile watermarks wired"
+else
+  bad "Logo asset/watermarks missing (logo=${LOGO_CODE})"
+fi
+
+# 13. Pin/fullscreen controls ship for every video tile (all participants)
 STUDENT_JS="$(curl -s "${BASE}/js/student.js")"
 if printf '%s' "${STUDENT_JS}" | grep -q 'tc-pin' \
    && printf '%s' "${STUDENT_JS}" | grep -q 'requestFullscreen'; then
@@ -180,6 +192,43 @@ if [ "${INST_WRONG}" = "403" ] && [ "${INST_MISSING}" = "403" ] && [ "${INST_RIG
 else
   bad "Instructor code gate: wrong=${INST_WRONG} missing=${INST_MISSING} correct=${INST_RIGHT}"
 fi
+
+# 14. Join gate (REQUIRE_INSTRUCTOR_START=true): student token blocked
+#     until an instructor has joined; instructor tokens always allowed.
+GATE_PORT=$((PORT + 1))
+GATE_BASE="http://localhost:${GATE_PORT}"
+REQUIRE_INSTRUCTOR_START="true" \
+INSTRUCTOR_CODE="test-instructor-code" \
+LIVEKIT_URL="wss://test.livekit.cloud" \
+LIVEKIT_API_KEY="test-key" \
+LIVEKIT_API_SECRET="test-secret" \
+ADMIN_PASSWORD_HASH="${ADMIN_HASH}" \
+ADMIN_JWT_SECRET="test-jwt-secret-at-least-32-chars-long" \
+CORS_ORIGIN="*" \
+NODE_ENV="development" \
+PORT="${GATE_PORT}" \
+node server.js > /tmp/livestream-gate-test.log 2>&1 &
+GATE_PID=$!
+for i in $(seq 1 20); do
+  if curl -s -o /dev/null "${GATE_BASE}/health"; then break; fi
+  sleep 0.5
+done
+
+GATE_STUDENT="$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"roomName":"gate-room","identity":"stu","role":"student"}' "${GATE_BASE}/api/token")"
+GATE_STUDENT_CODE="$(printf '%s' "${GATE_STUDENT}" | grep -o 'SESSION_NOT_STARTED' || true)"
+GATE_INST="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"roomName":"gate-room","identity":"teach","role":"instructor","code":"test-instructor-code"}' "${GATE_BASE}/api/token")"
+if printf '%s' "${GATE_STUDENT}" | grep -q '"code":"SESSION_NOT_STARTED"' \
+   && [ -n "${GATE_STUDENT_CODE}" ] \
+   && [ "${GATE_INST}" = "200" ]; then
+  ok "Join gate: student token blocked (SESSION_NOT_STARTED); instructor → 200"
+else
+  bad "Join gate unexpected — student[${GATE_STUDENT}] instructor=${GATE_INST}"
+fi
+
+kill "${GATE_PID}" 2>/dev/null || true
+wait "${GATE_PID}" 2>/dev/null || true
 
 echo ""
 echo "Result: ${PASS} passed, ${FAIL} failed"

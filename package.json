@@ -1,6 +1,6 @@
 {
   "name": "livestream-proctor",
-  "version": "1.4.4",
+  "version": "1.6.1",
   "description": "Mobile-optimized WebRTC (LiveKit) online session platform with lightweight proctoring telemetry",
   "main": "server.js",
   "scripts": {
