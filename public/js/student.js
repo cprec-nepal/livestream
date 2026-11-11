@@ -393,6 +393,10 @@
     // Pin/fullscreen controls — available on EVERY video tile for every
     // participant. Pinning is purely local: each viewer pins what they
     // see without affecting anyone else.
+    // Brand watermark — one <img> per tile (CSS overlay, zero CPU cost,
+    // survives in fullscreen since the tile itself is fullscreened).
+    const WATERMARK_HTML = '<img class="stream-watermark" src="/img/cprec-logo.png" alt="CPRE Nepal" draggable="false">';
+
     const TILE_CONTROLS_HTML =
       '<div class="tile-controls">' +
         '<button type="button" class="tc-pin" title="Pin this video to the main stage">📌 Pin</button>' +
@@ -489,7 +493,8 @@
         '<video muted playsinline autoplay></video>' +
         '<div class="label">You</div>' +
         '<div class="muted-badge">🔇</div>' +
-        TILE_CONTROLS_HTML;
+        TILE_CONTROLS_HTML +
+        WATERMARK_HTML;
       els.videoGrid.appendChild(tile);
       attachTileControls(tile);
 
@@ -512,7 +517,8 @@
       tile.innerHTML =
         '<div class="audio-avatar">' + initial + '</div>' +
         '<div class="label">' + escapeHtml(label) + '</div>' +
-        '<div class="muted-badge">🔇</div>';
+        '<div class="muted-badge">🔇</div>' +
+        WATERMARK_HTML;
     }
 
     function onParticipantConnected(participant) {
@@ -544,7 +550,8 @@
         '<div class="label">' + escapeHtml(participant.identity) + '</div>' +
         '<div class="muted-badge">🔇</div>' +
         TILE_CONTROLS_HTML +
-        MOD_CONTROLS_HTML;
+        MOD_CONTROLS_HTML +
+        WATERMARK_HTML;
       els.videoGrid.appendChild(tile);
       attachTileControls(tile);
       attachModControls(tile, participant.identity);
@@ -588,8 +595,11 @@
             '<video playsinline autoplay></video>' +
             '<div class="label">' + escapeHtml(participant.identity) + '</div>' +
             '<div class="muted-badge">🔇</div>' +
-            TILE_CONTROLS_HTML;
+            TILE_CONTROLS_HTML +
+            MOD_CONTROLS_HTML +
+            WATERMARK_HTML;
           attachTileControls(tile);
+          attachModControls(tile, participant.identity);
         }
         track.attach(tile.querySelector('video'));
         // Mute badge state
@@ -638,7 +648,8 @@
         tile.innerHTML =
           '<video playsinline autoplay></video>' +
           '<div class="label">🖥️ ' + escapeHtml(label) + (self ? ' (you)' : '') + '</div>' +
-          TILE_CONTROLS_HTML;
+          TILE_CONTROLS_HTML +
+          WATERMARK_HTML;
         els.videoGrid.appendChild(tile);
         attachTileControls(tile);
       }

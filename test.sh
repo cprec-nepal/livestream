@@ -157,7 +157,18 @@ else
   bad "JWT grants unexpected — student[${STUDENT_SOURCES}] instructor[${INSTRUCTOR_SOURCES}]"
 fi
 
-# 12. Pin/fullscreen controls ship for every video tile (all participants)
+# 12. Logo asset served locally + watermarks wired into tiles
+LOGO_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/img/cprec-logo.png")"
+STUDENT_JS="$(curl -s "${BASE}/js/student.js")"
+if [ "${LOGO_CODE}" = "200" ] \
+   && printf '%s' "${STUDENT_JS}" | grep -q 'stream-watermark' \
+   && printf '%s' "$(curl -s "${BASE}/")" | grep -q 'logo-img'; then
+  ok "CPRE Nepal logo served locally; header + tile watermarks wired"
+else
+  bad "Logo asset/watermarks missing (logo=${LOGO_CODE})"
+fi
+
+# 13. Pin/fullscreen controls ship for every video tile (all participants)
 STUDENT_JS="$(curl -s "${BASE}/js/student.js")"
 if printf '%s' "${STUDENT_JS}" | grep -q 'tc-pin' \
    && printf '%s' "${STUDENT_JS}" | grep -q 'requestFullscreen'; then

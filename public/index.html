@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0b0f1a" />
   <meta name="description" content="Live online session classroom with lightweight proctoring telemetry." />
   <title>Live Classroom | CPRE Nepal</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎓</text></svg>">
+  <link rel="icon" type="image/png" href="/img/cprec-logo.png">
 
   <!-- LiveKit client SDK (served locally from node_modules by server.js — no CDN needed) -->
   <script src="/js/vendor/livekit-client.umd.js"></script>
@@ -81,6 +81,11 @@
     .brand {
       display: flex; align-items: center; gap: 10px;
       font-weight: 700; letter-spacing: 0.2px;
+    }
+    .brand .logo-img {
+      width: 34px; height: 34px;
+      object-fit: contain;
+      border-radius: 8px;
     }
     .brand .logo {
       width: 32px; height: 32px; border-radius: 8px;
@@ -284,6 +289,22 @@
     /* Screen-share tiles */
     .tile.screen-share { border-color: rgba(255,184,0,0.4); }
     .tile.screen-share .label { background: rgba(255,184,0,0.85); color: #1a1a1a; }
+
+    /* Brand watermark on every video tile (CSS overlay — zero CPU) */
+    .tile { position: relative; }
+    .stream-watermark {
+      position: absolute; bottom: 10px; right: 10px;
+      width: 64px; height: auto;
+      opacity: 0.55;
+      pointer-events: none;
+      user-select: none;
+      z-index: 5;
+      filter: drop-shadow(0 1px 4px rgba(0,0,0,0.5));
+      transition: opacity 0.3s ease;
+    }
+    .tile:hover .stream-watermark { opacity: 0.85; }
+    .tile.pinned .stream-watermark { width: 96px; }
+    .tile:fullscreen .stream-watermark { width: 120px; opacity: 0.7; }
 
     /* Chat panel */
     .chat-body { display: flex; flex-direction: column; }
@@ -549,7 +570,7 @@
     <!-- ===== Top bar ===== -->
     <header class="topbar">
       <div class="brand">
-        <div class="logo">🎓</div>
+        <img class="logo-img" src="/img/cprec-logo.png" alt="CPRE Nepal logo">
         <div>
           <div class="title">Live Classroom</div>
           <div class="subtitle">CPRE Nepal</div>
