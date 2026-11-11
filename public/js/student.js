@@ -297,6 +297,60 @@
     // --------------------------------------------------------------
     function tileId(participantSid) { return 'tile-' + participantSid; }
 
+    // Pin/fullscreen controls — available on EVERY video tile for every
+    // participant. Pinning is purely local: each viewer pins what they
+    // see without affecting anyone else.
+    const TILE_CONTROLS_HTML =
+      '<div class="tile-controls">' +
+        '<button type="button" class="tc-pin" title="Pin this video to the main stage">📌 Pin</button>' +
+        '<button type="button" class="tc-fs" title="Fullscreen">⛶</button>' +
+      '</div>';
+
+    function attachTileControls(tile) {
+      const pinBtn = tile.querySelector('.tc-pin');
+      const fsBtn = tile.querySelector('.tc-fs');
+      if (!pinBtn || !fsBtn) return;
+      // Clicking the tile body (not the buttons) toggles pin
+      tile.addEventListener('click', (ev) => {
+        if (ev.target.closest('.tile-controls')) return;
+        setPinned(tile.id === pinnedTileId ? null : tile.id);
+      });
+      pinBtn.addEventListener('click', () =>
+        setPinned(tile.id === pinnedTileId ? null : tile.id));
+      fsBtn.addEventListener('click', () => {
+        const video = tile.querySelector('video');
+        if (!video) return;
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(() => {});
+        } else if (video.requestFullscreen) {
+          video.requestFullscreen().catch(() => {});
+        }
+      });
+    }
+
+    function setPinned(tileIdToPin) {
+      pinnedTileId = tileIdToPin || null;
+      const grid = els.videoGrid;
+      grid.querySelectorAll('.tile.pinned').forEach((t) => t.classList.remove('pinned'));
+      grid.classList.toggle('has-pinned', Boolean(pinnedTileId));
+      // Reset every pin button label, then mark the pinned one
+      grid.querySelectorAll('.tc-pin').forEach((b) => { b.textContent = '📌 Pin'; });
+      if (pinnedTileId) {
+        const tile = document.getElementById(pinnedTileId);
+        if (tile) {
+          tile.classList.add('pinned');
+          const btn = tile.querySelector('.tc-pin');
+          if (btn) btn.textContent = '📌 Unpin';
+        }
+      }
+    }
+
+    // If a tile that is currently pinned is removed (participant left,
+    // share stopped), drop the pin so the layout returns to normal.
+    function clearPinIfRemoved(removedTileId) {
+      if (pinnedTileId && removedTileId === pinnedTileId) setPinned(null);
+    }
+
     function ensureLocalTile() {
       const localSid = room.localParticipant.sid || room.localParticipant.identity;
       const id = tileId('local-' + localSid);
@@ -309,8 +363,10 @@
       tile.innerHTML =
         '<video muted playsinline autoplay></video>' +
         '<div class="label">You</div>' +
-        '<div class="muted-badge">🔇</div>';
+        '<div class="muted-badge">🔇</div>' +
+        TILE_CONTROLS_HTML;
       els.videoGrid.appendChild(tile);
+      attachTileControls(tile);
 
       // Attach local camera track if present (never the screen-share track)
       const videoEl = tile.querySelector('video');
@@ -342,7 +398,10 @@
 
     function onParticipantDisconnected(participant) {
       const tile = document.getElementById(tileId(participant.sid));
-      if (tile) tile.remove();
+      if (tile) {
+        clearPinIfRemoved(tile.id);
+        tile.remove();
+      }
       logTelemetry('Participant left: ' + escapeHtml(participant.identity));
       updateParticipantsCount();
     }
@@ -358,8 +417,10 @@
       tile.innerHTML =
         '<video playsinline autoplay></video>' +
         '<div class="label">' + escapeHtml(participant.identity) + '</div>' +
-        '<div class="muted-badge">🔇</div>';
+        '<div class="muted-badge">🔇</div>' +
+        TILE_CONTROLS_HTML;
       els.videoGrid.appendChild(tile);
+      attachTileControls(tile);
 
       // Attach any already-published tracks
       let hasCameraVideo = false;
@@ -399,7 +460,9 @@
           tile.innerHTML =
             '<video playsinline autoplay></video>' +
             '<div class="label">' + escapeHtml(participant.identity) + '</div>' +
-            '<div class="muted-badge">🔇</div>';
+            '<div class="muted-badge">🔇</div>' +
+            TILE_CONTROLS_HTML;
+          attachTileControls(tile);
         }
         track.attach(tile.querySelector('video'));
         // Mute badge state
@@ -415,7 +478,10 @@
       // Screen share ended — drop its tile, keep the camera tile intact
       if (isScreenPub(pub)) {
         const st = document.getElementById('tile-screen-' + participant.sid);
-        if (st) st.remove();
+        if (st) {
+          clearPinIfRemoved(st.id);
+          st.remove();
+        }
         return;
       }
       const tile = document.getElementById(tileId(participant.sid));
@@ -445,50 +511,11 @@
         tile.innerHTML =
           '<video playsinline autoplay></video>' +
           '<div class="label">🖥️ ' + escapeHtml(label) + (self ? ' (you)' : '') + '</div>' +
-          '<div class="tile-controls">' +
-            '<button type="button" class="tc-pin" title="Pin this screen to the main stage">📌 Pin</button>' +
-            '<button type="button" class="tc-fs" title="Fullscreen">⛶</button>' +
-          '</div>';
+          TILE_CONTROLS_HTML;
         els.videoGrid.appendChild(tile);
-
-        // Click tile (not its buttons) to pin/unpin
-        tile.addEventListener('click', (ev) => {
-          if (ev.target.closest('.tile-controls')) return;
-          setPinned(tile.id === pinnedTileId ? null : tile.id);
-        });
-        tile.querySelector('.tc-pin').addEventListener('click', () =>
-          setPinned(tile.id === pinnedTileId ? null : tile.id));
-        tile.querySelector('.tc-fs').addEventListener('click', () => {
-          const video = tile.querySelector('video');
-          if (!video) return;
-          if (document.fullscreenElement) {
-            document.exitFullscreen().catch(() => {});
-          } else if (video.requestFullscreen) {
-            video.requestFullscreen().catch(() => {});
-          }
-        });
+        attachTileControls(tile);
       }
       return tile;
-    }
-
-    // Pin one screen-share tile as the big stage; everything else
-    // shrinks into a filmstrip below (CSS via .has-pinned/.pinned).
-    function setPinned(tileId) {
-      pinnedTileId = tileId || null;
-      const grid = els.videoGrid;
-      grid.querySelectorAll('.tile.pinned').forEach((t) => t.classList.remove('pinned'));
-      grid.classList.toggle('has-pinned', Boolean(pinnedTileId));
-      if (pinnedTileId) {
-        const tile = document.getElementById(pinnedTileId);
-        if (tile) {
-          tile.classList.add('pinned');
-          const btn = tile.querySelector('.tc-pin');
-          if (btn) btn.textContent = '📌 Unpin';
-        }
-      }
-      grid.querySelectorAll('.tile.screen-share:not(.pinned) .tc-pin').forEach((b) => {
-        b.textContent = '📌 Pin';
-      });
     }
 
     document.addEventListener('keydown', (e) => {
@@ -511,7 +538,10 @@
       els.shareBtn.textContent = '🖥️ Share screen';
       els.shareBtn.classList.remove('sharing');
       const tile = document.getElementById('tile-screen-local');
-      if (tile) tile.remove();
+      if (tile) {
+        clearPinIfRemoved(tile.id);
+        tile.remove();
+      }
       logTelemetry('Screen sharing stopped');
     }
 

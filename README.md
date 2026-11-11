@@ -10,7 +10,7 @@ Built for **CPREC Nepal**.
 
 - **Live video sessions** powered by LiveKit (WebRTC under the hood)
 - **Host-controlled screen sharing** — instructors always can share; students only after an instructor/admin grants them (per participant or room-wide), enforced by LiveKit participant permissions *and* token grants — not just hidden buttons
-- **Pinned shared screen** — click a screen tile to pin it as the big stage with a filmstrip of other participants below; ⛶ true fullscreen button; Esc to unpin
+- **Pinned shared screen** — pin any video tile (screen share or camera) as the big stage with a filmstrip below; ⛶ true fullscreen; Esc to unpin. Available to **every participant** — pinning only changes your own view
 - **Room chat** — real-time text chat relayed by the server over Socket.io, rate-limited and length-capped, fully visible in the admin monitor
 - **Mobile-first graceful degradation** — auto-detects mobile devices and applies lower video constraints (640×480 @ 15fps), defaults to audio-only, and enables `adaptiveStream: true`
 - **Insecure-origin warnings + optional HTTPS** — the join screen explains when a browser will block camera/mic (non-HTTPS LAN access), and the server can serve TLS directly via `TLS_CERT`/`TLS_KEY`
