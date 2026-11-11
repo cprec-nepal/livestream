@@ -44,27 +44,43 @@ Render account: **~15 minutes + DNS propagation**.
 
 ---
 
-## 3. Create the DNS record at your registrar
+## 3. Create the DNS record — Cloudflare
 
-`.org.np` domains are typically managed at
-[register.com.np](https://register.com.np) / Mercantile or another
-registrar — wherever you manage DNS for `cprecnepal.org.np`.
+Since `cprecnepal.org.np` uses Cloudflare for DNS, the record is created
+in the **Cloudflare dashboard**, not at the registrar:
 
-Add **one** record (on the DNS page for `cprecnepal.org.np`):
+1. [dash.cloudflare.com](https://dash.cloudflare.com) → select **`cprecnepal.org.np`** → **DNS → Records → Add record**:
 
-| Type | Host / Name | Value / Target | TTL |
-|---|---|---|---|
-| CNAME | `livestream` | `livestream-proctor-xxxx.onrender.com` (from step 2) | 3600 |
+   | Field | Value |
+   |---|---|
+   | Type | `CNAME` |
+   | Name | `livestream` |
+   | Target | `livestream-proctor-xxxx.onrender.com` (from step 2) |
+   | Proxy status | **DNS only** (grey cloud) — see note below |
+   | TTL | Auto |
 
-If your registrar's DNS panel only supports A records for subdomains
-(rare), use Render's shown LB IPs instead (Render displays them when a
-CNAME isn't possible).
+2. **Proxy status (orange vs grey cloud):**
+   - Start with **DNS only (grey cloud)**. Render then issues its own
+     Let's Encrypt certificate directly — simplest, zero surprises.
+   - Once it works, you may switch to **Proxied (orange cloud)** for
+     Cloudflare's CDN/DDoS protection. If you do, set **SSL/TLS →
+     Overview → Full (strict)** (Cloudflare talks HTTPS to Render's
+     cert). WebSockets (needed for LiveKit + Socket.io) are supported
+     by default — verify **Network → WebSockets** is ON.
+   - Recommended extra when proxied: **SSL/TLS → Edge Certificates →
+     Always Use HTTPS: ON**.
 
-Wait for propagation (usually minutes; up to a few hours) — check with:
+3. Check propagation:
 
 ```bash
 nslookup livestream.cprecnepal.org.np
 ```
+
+> `.org.np` domains registered at register.com.np/Mercantile delegate
+> to Cloudflare by pointing the registrar's nameserver entries at the
+> two `*.ns.cloudflare.com` values Cloudflare shows when adding the
+> site. If the site is already active on Cloudflare, skip that — just
+> add the record above.
 
 ---
 
@@ -83,9 +99,43 @@ nslookup livestream.cprecnepal.org.np
 
 ---
 
-## 5. Alternative: your own VPS (nginx + Let's Encrypt)
+## 5. Alternative: your own VPS + Cloudflare Tunnel (no open ports)
 
-If you host on a VPS instead of Render:
+If you host on a VPS (or even your office PC), **Cloudflare Tunnel**
+exposes it without opening ports or buying certificates:
+
+```bash
+# one-time: install and authenticate (opens a browser link)
+cloudflared tunnel login
+cloudflared tunnel create livestream
+cloudflared tunnel route dns livestream livestream.cprecnepal.org.np
+```
+
+`~/.cloudflared/config.yml`:
+
+```yaml
+tunnel: livestream
+credentials-file: /home/YOU/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: livestream.cprecnepal.org.np
+    service: http://localhost:3000
+  - service: http_status:404
+```
+
+Run the app (`TRUST_PROXY=true`,
+`CORS_ORIGIN=https://livestream.cprecnepal.org.np`) and keep both alive:
+
+```bash
+pm2 start server.js --name livestream
+pm2 start "cloudflared tunnel run livestream" --name tunnel
+```
+
+Cloudflare terminates HTTPS at its edge; the app needs no cert at all.
+WebSockets work by default through the tunnel.
+
+## 5b. Alternative: plain VPS with nginx + Let's Encrypt
+
+If you prefer a classic setup on a VPS:
 
 ```nginx
 server {
@@ -125,6 +175,9 @@ DNS is the same CNAME → your VPS IP (an A record: `livestream` →
 
 | Symptom | Cause → fix |
 |---|---|
+| Works direct, fails through orange cloud | SSL mode not Full (strict) → SSL/TLS → Overview → **Full (strict)** |
+| Socket.io/LiveKit drop behind Cloudflare | WebSockets off → **Network → WebSockets: ON** |
+| Redirect loop through Cloudflare | Avoid "Flexible SSL"; use Full (strict) — or grey cloud while testing |
 | `Verify` fails on Render | DNS not propagated yet — wait, then re-check `nslookup` |
 | `ERR_SSL_/` certificate error | Certificate still issuing — wait ~2 min, hard refresh |
 | Camera/mic blocked | Page must be HTTPS — confirm the lock icon; use the domain, not an IP |
