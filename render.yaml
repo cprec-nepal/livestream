@@ -2,12 +2,14 @@ services:
   - type: web
     name: livestream-proctor
     runtime: node
+    plan: free
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
+      # Behind Render's proxy: rate limiting keys on the real client IP
       - key: TRUST_PROXY
         value: "true"
       - key: LIVEKIT_URL
@@ -22,6 +24,11 @@ services:
         sync: false
       - key: ADMIN_COOKIE_TTL_HOURS
         value: "8"
+      # Unique code instructors must enter to join as host (v1.4.2+)
+      - key: INSTRUCTOR_CODE
+        sync: false
+      # Set to https://livestream.cprecnepal.org.np once the custom
+      # domain is attached (see docs/DOMAIN-SETUP.md)
       - key: CORS_ORIGIN
         sync: false
       - key: MAX_PARTICIPANTS_PER_ROOM
