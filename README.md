@@ -148,6 +148,7 @@ Browsers only allow camera/mic + WebRTC on **secure origins** (`https://…` or 
 1. **HTTPS via the server** — set `TLS_CERT` + `TLS_KEY` to PEM file paths and restart (e.g. certificates from Let's Encrypt). The server then serves `https://` directly.
 2. **Quick test tunnel** — `cloudflared tunnel --url http://localhost:3000` prints a temporary `https://…trycloudflare.com` URL phones can join.
 3. **Real hosting** — deploy behind a reverse proxy with TLS (Render does this automatically). Planned address: `https://livestream.cprecnepal.org.np` — follow **[docs/DOMAIN-SETUP.md](docs/DOMAIN-SETUP.md)** for the complete step-by-step (deploy → custom domain → DNS → HTTPS).
+4. **Host from your own PC** (no Render, no VPS) — **[docs/SELF-HOST-CLOUDFLARE.md](docs/SELF-HOST-CLOUDFLARE.md)** walks through Cloudflare Tunnel on Windows: your computer serves the domain with automatic HTTPS, no open ports. Includes `scripts/selfhost-start.ps1` to launch server + tunnel together.
 
 See **[INSTALL.md](INSTALL.md)** for full setup + GitHub push instructions.
 
@@ -264,7 +265,7 @@ The included `render.yaml` provides a Render blueprint with reproducible install
 3. Set `CORS_ORIGIN` to the exact public HTTPS origin.
 4. Deploy with `npm ci && npm start`, then verify `/health` and test real audio/video between two browsers.
 
-See the complete **[deployment guide](docs/DEPLOYMENT.md)**, **[domain setup](docs/DOMAIN-SETUP.md)**, and **[release checklist](docs/RELEASE_CHECKLIST.md)**.
+See the complete **[deployment guide](docs/DEPLOYMENT.md)**, **[domain setup](docs/DOMAIN-SETUP.md)**, **[self-hosting via Cloudflare Tunnel](docs/SELF-HOST-CLOUDFLARE.md)**, and **[release checklist](docs/RELEASE_CHECKLIST.md)**.
 
 > **Before real classes or assessments:** add student authentication or signed invitations and server-side room authorization. Start with one application instance because room counts and telemetry are stored in memory. Review privacy and consent requirements before enabling proctoring telemetry.
 
