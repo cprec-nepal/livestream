@@ -260,6 +260,17 @@ fi
 kill "${GATE_PID}" 2>/dev/null || true
 wait "${GATE_PID}" 2>/dev/null || true
 
+# 17. Static app files send no-cache (Cloudflare edge must revalidate,
+#     not serve stale JS after deploys)
+CC_JS="$(curl -sI "${BASE}/js/student.js" | grep -i 'cache-control' || true)"
+CC_HTML="$(curl -sI "${BASE}/" | grep -i 'cache-control' || true)"
+if printf '%s' "${CC_JS}" | grep -qi 'no-cache' \
+   && printf '%s' "${CC_HTML}" | grep -qi 'no-cache'; then
+  ok "Static app assets send Cache-Control: no-cache (fresh deploys behind CDN)"
+else
+  bad "Cache-Control missing — js[${CC_JS}] html[${CC_HTML}]"
+fi
+
 echo ""
 echo "Result: ${PASS} passed, ${FAIL} failed"
 if [ "${FAIL}" -ne 0 ]; then
