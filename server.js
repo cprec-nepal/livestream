@@ -517,6 +517,11 @@ io.use((socket, next) => {
 
 const ADMIN_ROOM = 'admin-broadcast';
 
+// Room chat limits (server-side relay)
+const CHAT_MAX_LENGTH = 500;        // max characters per message
+const CHAT_WINDOW_MS = 10000;       // rate-limit window
+const CHAT_MAX_PER_WINDOW = 8;      // max messages per window per socket
+
 // ------------------------------------------------------------------
 // Socket.io telemetry handlers
 // ------------------------------------------------------------------
@@ -605,6 +610,39 @@ io.on('connection', (socket) => {
       hash: data.hash.toLowerCase(),
       timestamp: data.timestamp || Date.now(),
     });
+  });
+
+  // ---- chat:send -------------------------------------------------
+  // Relayed room chat. Room and identity are stamped server-side from
+  // the registered session (the payload text is the only trusted-here
+  // field), length-capped and rate-limited, then fanned out to the
+  // room's participants and the admin console.
+  let chatTimes = [];
+  socket.on('chat:send', (data) => {
+    const session = socketToSession.get(socket.id);
+    if (!session || !data) return;
+
+    const text = typeof data.text === 'string' ? data.text.trim().slice(0, CHAT_MAX_LENGTH) : '';
+    if (!text) return;
+
+    // Rate limit: CHAT_MAX_PER_WINDOW messages per CHAT_WINDOW_MS.
+    const now = Date.now();
+    chatTimes = chatTimes.filter((t) => now - t < CHAT_WINDOW_MS);
+    if (chatTimes.length >= CHAT_MAX_PER_WINDOW) {
+      socket.emit('chat:rate_limited', { retryAfterMs: CHAT_WINDOW_MS });
+      return;
+    }
+    chatTimes.push(now);
+
+    const msg = {
+      socketId: socket.id,
+      roomName: session.roomName,
+      identity: session.identity,
+      text,
+      timestamp: now,
+    };
+    io.to(session.roomName).emit('chat:message', msg);
+    io.to(ADMIN_ROOM).emit('chat:message', msg);
   });
 
   // ---- admin:join -----------------------------------------------

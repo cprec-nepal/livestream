@@ -9,6 +9,8 @@ Built for **CPREC Nepal**.
 ## ✨ Features
 
 - **Live video sessions** powered by LiveKit (WebRTC under the hood)
+- **Screen sharing** — one-click share/stop on desktop browsers (`getDisplayMedia`); the button stays hidden on unsupported mobile browsers
+- **Room chat** — real-time text chat relayed by the server over Socket.io, rate-limited and length-capped, fully visible in the admin monitor
 - **Mobile-first graceful degradation** — auto-detects mobile devices and applies lower video constraints (640×480 @ 15fps), defaults to audio-only, and enables `adaptiveStream: true`
 - **Lightweight proctoring telemetry**
   - `document.visibilitychange` tracking → tab-switch alerts fired to the admin dashboard in real time
