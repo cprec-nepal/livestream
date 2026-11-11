@@ -117,6 +117,11 @@ const CORS_ORIGINS = CORS_ORIGIN_RAW === '*'
 
 const TOKEN_TTL_MINUTES = 120; // 2 hours
 
+// v1.5: students can join only after the instructor has started the
+// session. Set REQUIRE_INSTRUCTOR_START=false to restore open joining.
+const REQUIRE_INSTRUCTOR_START = (process.env.REQUIRE_INSTRUCTOR_START || 'true').toLowerCase()
+  !== 'false';
+
 // ------------------------------------------------------------------
 // Fail-fast on missing real credentials in production
 // ------------------------------------------------------------------
@@ -165,10 +170,51 @@ function ensureRoom(roomName) {
       // Identities explicitly allowed to share their screen by a host
       // (instructor or admin). Instructors are always allowed by role.
       sharers: new Set(),
+      // True once an instructor has joined the session. When
+      // REQUIRE_INSTRUCTOR_START is on, students cannot get tokens
+      // until this flips.
+      hasInstructor: false,
       createdAt: Date.now(),
     });
   }
   return rooms.get(roomName);
+}
+
+// Instructor sockets per room, for relaying proctoring telemetry to
+// the instructor's in-class view (the admin dashboard has its own
+// channel). Maps roomName -> Set<socketId>.
+const instructorSocketsByRoom = new Map();
+
+function addInstructorSocket(roomName, socketId) {
+  if (!instructorSocketsByRoom.has(roomName)) {
+    instructorSocketsByRoom.set(roomName, new Set());
+  }
+  instructorSocketsByRoom.get(roomName).add(socketId);
+}
+
+function removeInstructorSocket(roomName, socketId) {
+  const set = instructorSocketsByRoom.get(roomName);
+  if (set) {
+    set.delete(socketId);
+    if (set.size === 0) instructorSocketsByRoom.delete(roomName);
+  }
+  // If no instructor sockets remain live for the room, the instructor
+  // has left — new students must wait for them to come back.
+  const hasLiveInstructor = Array.from(socketToSession.values())
+    .some((s) => s.roomName === roomName && s.role === 'instructor');
+  const room = rooms.get(roomName);
+  if (room) room.hasInstructor = hasLiveInstructor;
+}
+
+// Relay a proctoring/telemetry event to instructor sockets in a room
+// (wrapped as a generic envelope) plus the admin broadcast channel.
+function emitTelemetry(roomName, type, payload) {
+  const event = { type, ...payload };
+  const instructors = instructorSocketsByRoom.get(roomName);
+  if (instructors) {
+    instructors.forEach((socketId) => io.to(socketId).emit('telemetry:event', event));
+  }
+  io.to(ADMIN_ROOM).emit(type, payload);
 }
 
 // All live participant sessions in a room (from the socket registry).
@@ -543,6 +589,18 @@ app.post('/api/token', tokenLimiter, async (req, res) => {
     // Capacity check — only students count against the cap, instructors
     // are always allowed in (they need to start the session).
     if (safeRole === 'student') {
+      // Join gate: students can enter only after the instructor has
+      // started the session (v1.5). Disable with REQUIRE_INSTRUCTOR_START=false.
+      if (REQUIRE_INSTRUCTOR_START) {
+        const room = rooms.get(safeRoom);
+        if (!room || !room.hasInstructor) {
+          return res.status(403).json({
+            error: 'The session has not started yet — please wait for your instructor to join.',
+            code: 'SESSION_NOT_STARTED',
+            roomName: safeRoom,
+          });
+        }
+      }
       const room = ensureRoom(safeRoom);
       if (room.participantCount >= MAX_PARTICIPANTS_PER_ROOM) {
         return res.status(503).json({
@@ -668,10 +726,30 @@ io.on('connection', (socket) => {
     socket.join(roomName);
     incrementRoomCount(roomName);
 
+    if (session.role === 'instructor') {
+      // The instructor has started the session — students may join now.
+      ensureRoom(roomName).hasInstructor = true;
+      addInstructorSocket(roomName, socket.id);
+    }
+
     io.to(ADMIN_ROOM).emit('session:join', {
       socketId: socket.id,
       ...session,
     });
+    // Keep the instructor's in-class strip up to date too.
+    emitTelemetry(roomName, 'session:join', {
+      socketId: socket.id,
+      ...session,
+    });
+  });
+
+  // ---- telemetry:subscribe ----------------------------------------
+  // Instructor-only: receive proctoring/telemetry events for their own
+  // room in the in-class strip (students never receive these).
+  socket.on('telemetry:subscribe', () => {
+    const session = socketToSession.get(socket.id);
+    if (!session || session.role !== 'instructor') return;
+    addInstructorSocket(session.roomName, socket.id);
   });
 
   // ---- telemetry:visibility ------------------------------------
@@ -700,13 +778,13 @@ io.on('connection', (socket) => {
         timestamp: now,
       };
       pushAlert(session.roomName, alert);
-      io.to(ADMIN_ROOM).emit('proctor:alert', alert);
+      emitTelemetry(session.roomName, 'proctor:alert', alert);
       return;
     }
 
     // Always broadcast a lightweight visibility state event so the
     // admin can show "currently hidden" badges live.
-    io.to(ADMIN_ROOM).emit('telemetry:visibility', {
+    emitTelemetry(session.roomName, 'telemetry:visibility', {
       socketId: socket.id,
       roomName: session.roomName,
       identity: session.identity,
@@ -722,7 +800,7 @@ io.on('connection', (socket) => {
     if (!session || !data || typeof data.hash !== 'string') return;
     // Only accept well-formed SHA-256 hex digests (64 hex chars).
     if (!/^[a-f0-9]{64}$/i.test(data.hash)) return;
-    io.to(ADMIN_ROOM).emit('telemetry:snapshot_hash', {
+    emitTelemetry(session.roomName, 'telemetry:snapshot_hash', {
       socketId: socket.id,
       roomName: session.roomName,
       identity: session.identity,
@@ -845,6 +923,47 @@ io.on('connection', (socket) => {
     });
   });
 
+  // ---- session:end ------------------------------------------------
+  // Instructor-only: end the session for EVERYONE. Disconnects all
+  // LiveKit participants (deleteRoom), notifies the room and admin,
+  // and clears the room's live state. Compare with plain "Leave",
+  // which only exits the instructor's own session.
+  socket.on('session:end', async (data) => {
+    const session = socketToSession.get(socket.id);
+    if (!session || session.role !== 'instructor') return;
+    const roomName = data && typeof data.roomName === 'string'
+      ? data.roomName.trim().slice(0, 128)
+      : session.roomName;
+    if (roomName !== session.roomName) return;
+
+    console.log(`[session] ${session.identity} ended room=${roomName}`);
+    io.to(roomName).emit('session:ended', {
+      roomName,
+      endedBy: session.identity,
+      timestamp: Date.now(),
+    });
+    io.to(ADMIN_ROOM).emit('session:ended', {
+      roomName,
+      endedBy: session.identity,
+      timestamp: Date.now(),
+    });
+
+    // Force-disconnect every LiveKit participant (best-effort; the
+    // socket events above already told our own clients to leave).
+    const svc = getRoomService();
+    if (svc) {
+      try {
+        await svc.deleteRoom(roomName);
+      } catch (err) {
+        console.warn(`[session] LiveKit deleteRoom failed for ${roomName}: ${err.message}`);
+      }
+    }
+
+    // Clear the room's live state (sharers, instructor flag, counts).
+    rooms.delete(roomName);
+    instructorSocketsByRoom.delete(roomName);
+  });
+
   // ---- disconnect -----------------------------------------------
   socket.on('disconnect', () => {
     const session = socketToSession.get(socket.id);
@@ -862,10 +981,23 @@ io.on('connection', (socket) => {
           note: 'disconnected while hidden',
         };
         pushAlert(session.roomName, alert);
-        io.to(ADMIN_ROOM).emit('proctor:alert', alert);
+        emitTelemetry(session.roomName, 'proctor:alert', alert);
+      }
+      if (session.role === 'instructor') {
+        // Remove the session from the registry FIRST so the live
+        // instructor check inside removeInstructorSocket sees only
+        // *other* remaining instructors.
+        socketToSession.delete(socket.id);
+        removeInstructorSocket(session.roomName, socket.id);
       }
       decrementRoomCount(session.roomName);
       io.to(ADMIN_ROOM).emit('session:leave', {
+        socketId: socket.id,
+        roomName: session.roomName,
+        identity: session.identity,
+        leftAt: Date.now(),
+      });
+      emitTelemetry(session.roomName, 'session:leave', {
         socketId: socket.id,
         roomName: session.roomName,
         identity: session.identity,
@@ -927,6 +1059,7 @@ if (require.main === module) {
     console.log(`  LiveKit URL:    ${LIVEKIT_URL}`);
     console.log(`  Max/room:       ${MAX_PARTICIPANTS_PER_ROOM}`);
     console.log(`  Screen share:   instructor-only until granted (host-controlled)`);
+    console.log(`  Join gate:      ${REQUIRE_INSTRUCTOR_START ? 'students wait for instructor to start' : 'off (open joining)'}`);
     console.log(`  Instructor code: ${instructorCodeDigest ? 'required (set)' : 'NOT SET — instructor joining disabled'}`);
     console.log(`  CORS origin:    ${CORS_ORIGINS === '*' ? '*' : CORS_ORIGINS.join(', ')}`);
     console.log(`  Admin auth:     ${ADMIN_AUTH_SOURCE === 'none' ? 'DISABLED (set ADMIN_PASSWORD_HASH)' : 'enabled (' + ADMIN_AUTH_SOURCE + ')'}`);

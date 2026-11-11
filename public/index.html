@@ -317,6 +317,78 @@
     .chat-input-row input:focus { border-color: var(--accent); }
     .chat-input-row .btn { padding: 9px 14px; font-size: 13px; }
 
+    /* Collapsible chat + unread badge on the toggle button */
+    .chat-unread {
+      display: inline-grid; place-items: center;
+      min-width: 18px; height: 18px; padding: 0 5px;
+      background: var(--danger); color: #fff;
+      border-radius: 999px; font-size: 11px; font-weight: 700;
+      vertical-align: 1px;
+    }
+
+    /* Instructor-only telemetry strip under the controls */
+    .instructor-strip {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+      margin-top: 10px;
+      padding: 10px 14px;
+      background: var(--bg-2);
+      border: 1px solid rgba(255,184,0,0.3);
+      border-radius: var(--radius);
+      font-size: 12px; color: var(--text-dim);
+    }
+    .instructor-strip strong { color: var(--text); font-size: 13px; }
+    .instructor-strip .strip-item.warn strong { color: var(--warning); }
+    .instructor-strip .strip-item.danger strong { color: var(--danger); }
+    .instructor-strip .latest {
+      margin-left: auto; color: var(--text-faint);
+      max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* Fullscreen video: keep a chat overlay available (move the real
+       chat nodes into the tile while fullscreen) */
+    .tile:fullscreen {
+      background: #000;
+      display: grid; place-items: center;
+    }
+    .tile:fullscreen video { max-width: 100%; max-height: 100%; }
+    .tile .fs-chat {
+      display: none;
+      position: absolute; right: 16px; bottom: 16px;
+      width: 320px; max-height: 45%;
+      background: rgba(7,10,18,0.92);
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      flex-direction: column;
+      overflow: hidden;
+      z-index: 10;
+    }
+    .tile:fullscreen .fs-chat.open { display: flex; }
+    .fs-chat .fs-chat-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; font-size: 13px; font-weight: 700;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .fs-chat .fs-chat-body { display: flex; flex-direction: column; overflow: hidden; padding: 10px; }
+
+    /* Session-ended overlay */
+    .ended-overlay {
+      position: fixed; inset: 0; z-index: 50;
+      background: rgba(4,6,12,0.9);
+      display: grid; place-items: center;
+      backdrop-filter: blur(4px);
+    }
+    .ended-card {
+      background: var(--bg-2);
+      border: 1px solid var(--border-strong);
+      border-radius: 16px;
+      padding: 32px 36px; text-align: center;
+      max-width: 380px;
+    }
+    .ended-card .ended-icon { font-size: 40px; margin-bottom: 8px; }
+    .ended-card h2 { margin: 0 0 8px; font-size: 20px; }
+    .ended-card p { color: var(--text-dim); font-size: 13px; margin: 0 0 18px; line-height: 1.5; }
+
     /* Side panel */
     .side {
       display: flex; flex-direction: column; gap: 16px;
@@ -436,7 +508,7 @@
     <!-- ===== Join screen ===== -->
     <section id="joinScreen" class="join-card">
       <h1>Join the live session</h1>
-      <p class="lead">Enter your name and the session room. Mobile devices join audio-only by default to save bandwidth.</p>
+      <p class="lead">Enter your name and the session room. Sessions open when your instructor joins — mobile devices join audio-only by default.</p>
 
       <div id="securityWarning" class="security-warning">
         <strong>⚠️ Insecure connection.</strong> Cameras, microphones and live video are blocked by your browser on non-HTTPS pages. Open this page over <code>https://</code> (or <code>localhost</code>) to join properly.
@@ -489,12 +561,22 @@
             <button id="micBtn" class="btn" type="button">🎙️ Mic on</button>
             <button id="camBtn" class="btn" type="button">📷 Cam on</button>
             <button id="shareBtn" class="btn" type="button" hidden>🖥️ Share screen</button>
-            <button id="chatBtn" class="btn" type="button">💬 Chat</button>
+            <button id="chatBtn" class="btn" type="button">💬 Chat <span id="chatUnread" class="chat-unread" hidden>0</span></button>
+            <button id="endBtn" class="btn danger" type="button" hidden>⏹ End session</button>
             <button id="leaveBtn" class="btn danger" type="button">Leave</button>
+          </div>
+
+          <!-- Instructor-only live strip (students never see this) -->
+          <div id="instructorStrip" class="instructor-strip" hidden>
+            <span class="strip-item"><strong id="stripParticipants">0</strong> participants</span>
+            <span class="strip-item"><strong id="stripHidden">0</strong> hidden now</span>
+            <span class="strip-item warn"><strong id="stripTabSwitches">0</strong> tab switches</span>
+            <span class="strip-item danger"><strong id="stripAbsences">0</strong> absences</span>
+            <span class="strip-item latest" id="stripLatest">monitoring…</span>
           </div>
         </div>
 
-        <!-- Side panel: session info + telemetry log -->
+        <!-- Side panel: session info + chat (telemetry is instructor/admin-only) -->
         <aside class="side">
           <div class="panel">
             <div class="panel-head">Session info</div>
@@ -507,7 +589,7 @@
             </div>
           </div>
 
-          <div class="panel">
+          <div class="panel" id="telemetryPanel" hidden>
             <div class="panel-head">Telemetry</div>
             <div class="panel-body">
               <div id="telemetryLog" class="telemetry-log">
@@ -519,9 +601,9 @@
             </div>
           </div>
 
-          <div class="panel">
+          <div class="panel" id="chatPanel">
             <div class="panel-head">Chat</div>
-            <div class="panel-body chat-body">
+            <div class="panel-body chat-body" id="chatBody">
               <div id="chatLog" class="chat-log"></div>
               <div class="chat-input-row">
                 <input id="chatInput" type="text" maxlength="500" placeholder="Type a message…" autocomplete="off" />
@@ -530,6 +612,16 @@
             </div>
           </div>
         </aside>
+      </div>
+
+      <!-- Shown to everyone when the instructor ends the session -->
+      <div id="endedOverlay" class="ended-overlay" hidden>
+        <div class="ended-card">
+          <div class="ended-icon">🏫</div>
+          <h2>Session ended</h2>
+          <p>The instructor has ended this session. You can close this page or join another room.</p>
+          <button id="endedBackBtn" class="btn primary" type="button">Back to join</button>
+        </div>
       </div>
     </section>
   </div>
