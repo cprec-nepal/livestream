@@ -227,6 +227,14 @@ else
   bad "Join gate unexpected — student[${GATE_STUDENT}] instructor=${GATE_INST}"
 fi
 
+# 15. Functional socket flows against the gated server (gate,
+#     moderation, end-session teardown, room reuse)
+if PORT="${GATE_PORT}" INSTRUCTOR_CODE="test-instructor-code" node tests/socket-flows.js; then
+  ok "Socket flow suite (gate, moderation, end-session, reuse)"
+else
+  bad "Socket flow suite failed (see output above)"
+fi
+
 kill "${GATE_PID}" 2>/dev/null || true
 wait "${GATE_PID}" 2>/dev/null || true
 

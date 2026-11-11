@@ -1079,6 +1079,11 @@ io.on('connection', (socket) => {
       ? data.roomName.trim().slice(0, 128)
       : session.roomName;
     if (roomName !== session.roomName) return;
+    // Double-end guard: claim the room synchronously so a second click
+    // (or duplicate event arriving during the async LiveKit call below)
+    // cannot re-broadcast.
+    if (!rooms.has(roomName)) return;
+    rooms.delete(roomName);
 
     console.log(`[session] ${session.identity} ended room=${roomName}`);
     io.to(roomName).emit('session:ended', {
@@ -1092,8 +1097,19 @@ io.on('connection', (socket) => {
       timestamp: Date.now(),
     });
 
-    // Force-disconnect every LiveKit participant (best-effort; the
-    // socket events above already told our own clients to leave).
+    // Full teardown so nothing leaks into the NEXT session with the
+    // same name: remove every socket from the socket.io room and drop
+    // their session registrations (they must re-emit session:join).
+    io.in(roomName).socketsLeave(roomName);
+    for (const [socketId, sess] of Array.from(socketToSession.entries())) {
+      if (sess.roomName === roomName) {
+        socketToSession.delete(socketId);
+      }
+    }
+    instructorSocketsByRoom.delete(roomName);
+
+    // Force-disconnect every LiveKit participant (best-effort, after
+    // local teardown; our clients have already left via the event).
     const svc = getRoomService();
     if (svc) {
       try {
@@ -1102,10 +1118,6 @@ io.on('connection', (socket) => {
         console.warn(`[session] LiveKit deleteRoom failed for ${roomName}: ${err.message}`);
       }
     }
-
-    // Clear the room's live state (sharers, instructor flag, counts).
-    rooms.delete(roomName);
-    instructorSocketsByRoom.delete(roomName);
   });
 
   // ---- disconnect -----------------------------------------------

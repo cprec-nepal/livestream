@@ -332,6 +332,13 @@
       els.telemetryPanel.hidden = !isInstructor;
       els.instructorStrip.hidden = !isInstructor;
       els.endBtn.hidden = !isInstructor;
+      // Fresh session: clear any leftover ended/removed overlay and
+      // restore its default copy.
+      els.endedOverlay.hidden = true;
+      const endedTitle = document.getElementById('endedCardTitle');
+      const endedText = document.getElementById('endedCardText');
+      if (endedTitle) endedTitle.textContent = 'Session ended';
+      if (endedText) endedText.textContent = 'The instructor has ended this session. You can close this page or join another room.';
       if (isInstructor) {
         stripStats = { tabSwitches: 0, absences: 0 };
         els.stripTabSwitches.textContent = '0';
@@ -395,7 +402,7 @@
     // see without affecting anyone else.
     // Brand watermark — one <img> per tile (CSS overlay, zero CPU cost,
     // survives in fullscreen since the tile itself is fullscreened).
-    const WATERMARK_HTML = '<img class="stream-watermark" src="/img/cprec-logo.png" alt="CPRE Nepal" draggable="false">';
+    const WATERMARK_HTML = '<img class="stream-watermark" src="/img/cprec-logo.png" alt="CPREC Nepal" draggable="false">';
 
     const TILE_CONTROLS_HTML =
       '<div class="tile-controls">' +
@@ -852,43 +859,21 @@
     });
 
     // End session — instructor only, with confirmation
+    let endSessionInFlight = false;
     els.endBtn.addEventListener('click', () => {
-      if (!currentRoom) return;
+      if (!currentRoom || endSessionInFlight) return;
       if (!confirm('End the session for EVERYONE? Students will be disconnected.')) return;
+      endSessionInFlight = true;
       socket.emit('session:end', { roomName: currentRoom });
+      setTimeout(() => { endSessionInFlight = false; }, 3000);
     });
 
     // Everyone: the instructor ended the session — leave LiveKit and
-    // show the overlay.
+    // show the overlay. Strict guard: only react when we are ACTIVELY
+    // in the ended room (stale/duplicate events must not pop the
+    // overlay on the join screen or while creating a new session).
     socket.on('session:ended', (event) => {
-      if (!event || (currentRoom && event.roomName !== currentRoom)) return;
-      if (room) {
-        try { room.disconnect(); } catch (e) { /* already gone */ }
-      }
-      els.endedOverlay.hidden = false;
-    });
-
-    els.endedBackBtn.addEventListener('click', () => {
-      els.endedOverlay.hidden = true;
-      // Reset to the join screen for the next session
-      els.classroom.classList.remove('active');
-      els.joinScreen.style.display = '';
-      setStatus('idle', 'Idle');
-      if (typeof onDisconnected === 'function') onDisconnected();
-    });
-
-
-    // End session — instructor only, with confirmation
-    els.endBtn.addEventListener('click', () => {
-      if (!currentRoom) return;
-      if (!confirm('End the session for EVERYONE? Students will be disconnected.')) return;
-      socket.emit('session:end', { roomName: currentRoom });
-    });
-
-    // Everyone: the instructor ended the session — leave LiveKit and
-    // show the overlay.
-    socket.on('session:ended', (event) => {
-      if (!event || (currentRoom && event.roomName !== currentRoom)) return;
+      if (!event || !currentRoom || event.roomName !== currentRoom) return;
       if (room) {
         try { room.disconnect(); } catch (e) { /* already gone */ }
       }
