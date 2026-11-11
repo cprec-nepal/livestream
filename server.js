@@ -362,12 +362,25 @@ app.use(helmet({
         "'self'",
         // LiveKit client SDK via jsDelivr CDN (single-file HTML UI)
         'https://cdn.jsdelivr.net',
+        // Cloudflare injects its Web Analytics (RUM) beacon + inline
+        // bootstrap when the site is served through the orange-cloud
+        // proxy (e.g. behind cloudflared tunnel + proxied DNS).
+        'https://static.cloudflareinsights.com',
+        // The inline bootstrap loader Cloudflare injects. If Cloudflare
+        // changes it, the console shows the new hash to add here.
+        'sha256-49lfgPG8HNEabLofSHUlsPZlsBnNVnuB+zZ6RpMMkc0=',
       ],
       // socket.io + LiveKit signaling. The LiveKit host is pinned from
       // LIVEKIT_URL when it looks real, so a rogue subdomain cannot
       // become a signaling endpoint; 'wss:' remains only as a fallback
       // when the URL is still a placeholder.
-      connectSrc: ["'self'", ...livekitCspOrigins(), 'https:'],
+      connectSrc: [
+        "'self'",
+        ...livekitCspOrigins(),
+        'https:',
+        // Cloudflare RUM beacon reporting endpoint
+        'https://cloudflareinsights.com',
+      ],
       imgSrc: ["'self'", 'data:'],
       mediaSrc: ["'self'", 'blob:', 'https:'],
       styleSrc: ["'self'", "'unsafe-inline'"],

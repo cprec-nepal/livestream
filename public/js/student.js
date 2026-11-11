@@ -45,6 +45,7 @@
       instructorCodeField: $('instructorCodeField'),
       instructorCode: $('instructorCode'),
       chatPanel:      $('chatPanel'),
+      telemetryPanel: $('telemetryPanel'),
       chatBody:       $('chatBody'),
       chatUnread:     $('chatUnread'),
       endBtn:         $('endBtn'),
@@ -265,13 +266,18 @@
         adaptiveStream: true,    // ← required by spec
         dynacast: true,           // publishes layers on demand
         publishDefaults: {
+          // AudioPreset = { maxBitrate } in v2 (the old audioBitrate
+          // option no longer exists — setting bitrate via the preset).
           audioPreset: isMobile
-            ? LiveKit.AudioPresets.speech
-            : LiveKit.AudioPresets.music,
-          audioBitrate: isMobile ? 12_000 : 32_000,
+            ? { ...LiveKit.AudioPresets.speech, maxBitrate: 12_000 }
+            : { ...LiveKit.AudioPresets.music, maxBitrate: 32_000 },
+          // NOTE: videoSimulcastLayers takes VideoPreset OBJECTS — the
+          // SDK derives encodings itself (passing .encoding values
+          // crashes its internal preset sort with
+          // "Cannot read properties of undefined (reading 'maxBitrate')").
           videoSimulcastLayers: isMobile
-            ? [LiveKit.VideoPresets.h90.encoding, LiveKit.VideoPresets.h216.encoding]
-            : [LiveKit.VideoPresets.h180.encoding, LiveKit.VideoPresets.h360.encoding, LiveKit.VideoPresets.h720.encoding],
+            ? [LiveKit.VideoPresets.h90, LiveKit.VideoPresets.h216]
+            : [LiveKit.VideoPresets.h180, LiveKit.VideoPresets.h360, LiveKit.VideoPresets.h720],
         },
       };
 
