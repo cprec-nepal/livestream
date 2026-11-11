@@ -17,6 +17,14 @@
       alertsList:     $('alertsList'),
       filters:        $('filters'),
       clearAlertsBtn: $('clearAlertsBtn'),
+      classesCount:   $('classesCount'),
+      classesList:    $('classesList'),
+      classTitle:     $('classTitle'),
+      classRoom:      $('classRoom'),
+      classStart:     $('classStart'),
+      classDuration:  $('classDuration'),
+      classCreateBtn: $('classCreateBtn'),
+      classError:     $('classError'),
     };
 
     // --------------------------------------------------------------
@@ -410,4 +418,120 @@
 
     // Expose config for capacity bar calculation
     window.__maxPerRoom = '50';
+
+    // --------------------------------------------------------------
+    // Scheduled classes — create, list, cancel, copy links
+    // --------------------------------------------------------------
+    async function api(url, opts) {
+      const res = await fetch(url, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ')'));
+      return data;
+    }
+
+    function fmtClassTime(iso) {
+      const d = new Date(iso);
+      return d.toLocaleString(undefined, {
+        weekday: 'short', year: 'numeric', month: 'short',
+        day: 'numeric', hour: '2-digit', minute: '2-digit',
+      });
+    }
+
+    function renderClasses(classes) {
+      els.classesCount.textContent = classes.length;
+      if (classes.length === 0) {
+        els.classesList.innerHTML =
+          '<div class="empty" style="padding:16px;"><div class="big">🗓️</div>No classes scheduled yet</div>';
+        return;
+      }
+      els.classesList.innerHTML = classes.map((c) => {
+        const link = location.origin + '/?room=' + encodeURIComponent(c.room);
+        const names = (c.confirmations || []).map((x) => escapeHtml(x.name)).join(', ');
+        const confirms = names
+          ? (c.confirmedCount + ' confirmed · ' + names)
+          : (c.confirmedCount + ' confirmed');
+        return '' +
+          '<div class="class-card ' + c.status + '">' +
+            '<div class="c-head">' +
+              '<span class="c-title">' + escapeHtml(c.title) + '</span>' +
+              '<span class="c-status">' + c.status + '</span>' +
+            '</div>' +
+            '<div class="c-meta">🗓️ ' + fmtClassTime(c.startAt) + ' · ' + c.durationMin + ' min · room <strong>' + escapeHtml(c.room) + '</strong></div>' +
+            '<div class="c-meta">🔗 ' + escapeHtml(link) + '</div>' +
+            '<div class="c-actions">' +
+              '<span class="c-confirms" title="' + confirms + '">🙋 ' + c.confirmedCount + ' confirmed</span>' +
+              '<button type="button" class="pbtn small" data-copy="' + escapeHtml(link) + '">🔗 Copy student link</button>' +
+              '<button type="button" class="pbtn small" data-cancel="' + c.id + '">✖ Cancel</button>' +
+            '</div>' +
+          '</div>';
+      }).join('');
+    }
+
+    async function refreshClasses() {
+      try {
+        const data = await api('/api/classes');
+        renderClasses(data.classes || []);
+      } catch (err) {
+        // Session expired → the page middleware will redirect on next
+        // admin socket; keep the panel quiet otherwise.
+        console.warn('[classes]', err.message);
+      }
+    }
+
+    els.classCreateBtn.addEventListener('click', async () => {
+      els.classError.textContent = '';
+      const title = els.classTitle.value.trim();
+      const startAt = els.classStart.value;
+      if (!title) { els.classError.textContent = 'Please enter a class title.'; return; }
+      if (!startAt) { els.classError.textContent = 'Please pick a date and time.'; return; }
+      try {
+        els.classCreateBtn.disabled = true;
+        await api('/api/classes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title,
+            room: els.classRoom.value.trim(),
+            startAt: new Date(startAt).toISOString(),
+            durationMin: parseInt(els.classDuration.value, 10) || 60,
+          }),
+        });
+        els.classTitle.value = '';
+        els.classRoom.value = '';
+        els.classStart.value = '';
+        await refreshClasses();
+      } catch (err) {
+        els.classError.textContent = err.message;
+      } finally {
+        els.classCreateBtn.disabled = false;
+      }
+    });
+
+    els.classesList.addEventListener('click', async (ev) => {
+      const copyBtn = ev.target.closest('[data-copy]');
+      if (copyBtn) {
+        try {
+          await navigator.clipboard.writeText(copyBtn.dataset.copy);
+          copyBtn.textContent = '✅ Copied';
+          setTimeout(() => { copyBtn.textContent = '🔗 Copy student link'; }, 2000);
+        } catch (e) {
+          window.prompt('Copy this link:', copyBtn.dataset.copy);
+        }
+        return;
+      }
+      const cancelBtn = ev.target.closest('[data-cancel]');
+      if (cancelBtn) {
+        if (!confirm('Cancel this scheduled class?')) return;
+        try {
+          await api('/api/classes/' + cancelBtn.dataset.cancel, { method: 'DELETE' });
+          await refreshClasses();
+        } catch (err) {
+          alert(err.message);
+        }
+      }
+    });
+
+    // Initial load + periodic refresh (status flips + confirmations)
+    refreshClasses();
+    setInterval(refreshClasses, 30000);
   })();

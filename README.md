@@ -14,6 +14,7 @@ Built for **CPREC Nepal**.
 - **No proctoring UI for students** — the telemetry panel is instructor/admin-only; students see a clean classroom (collection continues silently)
 - **Chat everywhere** — collapsible sidebar chat with an unread badge, and the same chat moves into a floating overlay inside fullscreen video with its own open/close
 - **Instructor moderation** — mute/unmute and remove (kick) any participant from the admin dashboard or the instructor's own tiles; enforced server-side via LiveKit's Mute/RemoveParticipant APIs
+- **Scheduled classes & shareable links** — schedule classes (title, date/time, duration) from the dashboard; every class gets a shareable student link (`/?room=…`) that shows a class card with a **Confirm attendance** button; instructors copy an invite link for live rooms with one click. Schedules persist in `data/classes.json` (gitignored)
 - **Accessible & polished** — zoom allowed on mobile, `role="alert"` announcements, visible keyboard focus, WebRTC-unsupported messaging, reconnect banner, preconnect to the signaling host, pinned CSP `connect-src`, 1-year HSTS
 - **Code-gated instructor role** — joining as host requires the unique `INSTRUCTOR_CODE` (server-validated with a constant-time comparison); without it configured, instructor joining is disabled (fail closed)
 - **Pinned shared screen** — pin any video tile (screen share or camera) as the big stage with a filmstrip below; ⛶ true fullscreen; Esc to unpin. Available to **every participant** — pinning only changes your own view

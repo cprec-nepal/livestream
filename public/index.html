@@ -447,6 +447,23 @@
     }
     .tile .mod-controls button:hover { background: rgba(7,10,18,0.95); }
 
+    /* Scheduled-class card on the join screen */
+    .class-card {
+      display: block;
+      background: rgba(79,124,255,0.06);
+      border: 1px solid rgba(79,124,255,0.35);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+    .class-card .cc-title { font-weight: 700; color: var(--text); font-size: 14px; margin-bottom: 4px; }
+    .class-card .cc-meta { color: var(--text-dim); font-size: 12px; margin-bottom: 4px; }
+    .class-card .cc-status { color: var(--accent); font-weight: 700; font-size: 12px; margin-bottom: 8px; }
+    .class-card .cc-status.live { color: var(--success); }
+    .class-card .cc-status.ended { color: var(--text-faint); }
+    .class-card .cc-confirmed { color: var(--success); font-size: 12px; font-weight: 700; }
+
     /* Session-ended overlay */
     .ended-overlay {
       position: fixed; inset: 0; z-index: 50;
@@ -611,6 +628,16 @@
         <input id="room" type="text" placeholder="e.g. math-101" />
       </div>
 
+      <div id="classCard" class="class-card" hidden>
+        <div class="cc-title" id="classCardTitle">—</div>
+        <div class="cc-meta" id="classCardWhen">—</div>
+        <div class="cc-status" id="classCardStatus">—</div>
+        <div class="cc-confirm-row" id="classConfirmRow">
+          <button id="classConfirmBtn" class="btn" type="button">🙋 Confirm my attendance</button>
+          <span id="classConfirmedMsg" class="cc-confirmed" hidden>✅ Attendance confirmed — see you in class!</span>
+        </div>
+      </div>
+
       <div class="role-row" id="mobileVideoRow" hidden>
         <input id="mobileVideo" type="checkbox" />
         <label for="mobileVideo">Enable video on mobile (uses more data)</label>
@@ -655,6 +682,7 @@
             <button id="camBtn" class="btn" type="button">📷 Cam on</button>
             <button id="shareBtn" class="btn" type="button" hidden>🖥️ Share screen</button>
             <button id="chatBtn" class="btn" type="button">💬 Chat <span id="chatUnread" class="chat-unread" hidden>0</span></button>
+            <button id="linkBtn" class="btn" type="button" hidden>🔗 Copy invite link</button>
             <button id="endBtn" class="btn danger" type="button" hidden>⏹ End session</button>
             <button id="leaveBtn" class="btn danger" type="button">Leave</button>
           </div>
