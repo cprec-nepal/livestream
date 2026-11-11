@@ -130,6 +130,76 @@ const CORS_ORIGINS = CORS_ORIGIN_RAW === '*'
 
 const TOKEN_TTL_MINUTES = 120; // 2 hours
 
+// ------------------------------------------------------------------
+// Scheduled classes (file-backed so schedules survive restarts on the
+// self-hosted machine). Stored in data/classes.json — gitignored.
+// ------------------------------------------------------------------
+const DATA_DIR = path.join(__dirname, 'data');
+const CLASSES_FILE = path.join(DATA_DIR, 'classes.json');
+const MAX_CONFIRMATIONS_PER_CLASS = 200;
+
+/** @type {Map<string, any>} id -> class record */
+const scheduledClasses = new Map();
+
+function loadClasses() {
+  try {
+    if (fs.existsSync(CLASSES_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(CLASSES_FILE, 'utf8'));
+      if (Array.isArray(raw)) {
+        raw.forEach((c) => scheduledClasses.set(c.id, c));
+      }
+    }
+  } catch (err) {
+    console.warn('[classes] failed to load classes.json:', err.message);
+  }
+}
+
+function saveClasses() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(CLASSES_FILE, JSON.stringify(Array.from(scheduledClasses.values()), null, 2));
+  } catch (err) {
+    console.warn('[classes] failed to save classes.json:', err.message);
+  }
+}
+
+function slugifyRoom(title) {
+  const base = String(title || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'class';
+  let room = base;
+  let n = 2;
+  // Room names must be unique among scheduled classes
+  const taken = new Set(Array.from(scheduledClasses.values()).map((c) => c.room));
+  while (taken.has(room)) room = `${base}-${n++}`;
+  return room;
+}
+
+function classStatus(c, now = Date.now()) {
+  const start = new Date(c.startAt).getTime();
+  const end = start + c.durationMin * 60000;
+  if (now < start) return 'upcoming';
+  if (now < end) return 'live';
+  return 'ended';
+}
+
+function publicClass(c) {
+  return {
+    id: c.id,
+    title: c.title,
+    room: c.room,
+    startAt: c.startAt,
+    durationMin: c.durationMin,
+    status: classStatus(c),
+    confirmedCount: (c.confirmations || []).length,
+  };
+}
+
+loadClasses();
+
 // v1.5: students can join only after the instructor has started the
 // session. Set REQUIRE_INSTRUCTOR_START=false to restore open joining.
 const REQUIRE_INSTRUCTOR_START = (process.env.REQUIRE_INSTRUCTOR_START || 'true').toLowerCase()
@@ -577,6 +647,131 @@ app.get('/health', (req, res) => {
 // The student UI reads SNAPSHOT_INTERVAL_MS from here so the cadence is
 // controlled server-side via env var without a redeploy of the HTML.
 // ------------------------------------------------------------------
+// ------------------------------------------------------------------
+// Scheduled classes API
+//   Admin (cookie-authenticated, JSON 401): create / list / cancel
+//   Public: class info card for a room, attendance confirmation
+// ------------------------------------------------------------------
+function requireAdminApi(req, res, next) {
+  const token = req.cookies && req.cookies.admin_session;
+  if (!token) return res.status(401).json({ error: 'Admin authentication required' });
+  try {
+    jwt.verify(token, ADMIN_JWT_SECRET, { algorithms: ['HS256'] });
+    return next();
+  } catch (err) {
+    res.clearCookie('admin_session');
+    return res.status(401).json({ error: 'Admin session expired' });
+  }
+}
+
+const confirmLimiter = rateLimit({
+  windowMs: 60000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many confirmation attempts — try again in a minute' },
+});
+
+// Create a scheduled class
+app.post('/api/classes', requireAdminApi, (req, res) => {
+  const { title, room, startAt, durationMin } = req.body || {};
+  if (!title || typeof title !== 'string' || !title.trim()) {
+    return res.status(400).json({ error: 'title is required' });
+  }
+  if (title.trim().length > 120) {
+    return res.status(400).json({ error: 'title too long (max 120 chars)' });
+  }
+  const start = new Date(startAt || '');
+  if (!startAt || Number.isNaN(start.getTime())) {
+    return res.status(400).json({ error: 'startAt must be a valid date/time' });
+  }
+  const dur = parseInt(durationMin, 10);
+  if (!Number.isFinite(dur) || dur < 5 || dur > 600) {
+    return res.status(400).json({ error: 'durationMin must be 5-600' });
+  }
+
+  let roomName = typeof room === 'string' && room.trim()
+    ? room.trim().slice(0, 128)
+    : slugifyRoom(title);
+  const roomTaken = () => Array.from(scheduledClasses.values())
+    .some((c) => c.room === roomName && classStatus(c) !== 'ended');
+  if (roomTaken() && !room) roomName = slugifyRoom(title);
+  if (roomTaken()) {
+    return res.status(409).json({ error: `A scheduled class already uses room "${roomName}"`, room: roomName });
+  }
+
+  const record = {
+    id: crypto.randomUUID(),
+    title: title.trim(),
+    room: roomName,
+    startAt: start.toISOString(),
+    durationMin: dur,
+    createdAt: Date.now(),
+    confirmations: [],
+  };
+  scheduledClasses.set(record.id, record);
+  saveClasses();
+  console.log(`[classes] created "${record.title}" room=${record.room} at ${record.startAt}`);
+  return res.status(201).json({ ok: true, class: publicClass(record) });
+});
+
+// List all scheduled classes (admin) — soonest first
+app.get('/api/classes', requireAdminApi, (req, res) => {
+  const list = Array.from(scheduledClasses.values())
+    .sort((a, b) => new Date(a.startAt) - new Date(b.startAt))
+    .map((c) => ({ ...publicClass(c), confirmations: c.confirmations || [] }));
+  return res.json({ classes: list });
+});
+
+// Cancel (delete) a scheduled class
+app.delete('/api/classes/:id', requireAdminApi, (req, res) => {
+  const rec = scheduledClasses.get(req.params.id);
+  if (!rec) return res.status(404).json({ error: 'Class not found' });
+  scheduledClasses.delete(req.params.id);
+  saveClasses();
+  return res.json({ ok: true });
+});
+
+// Public: class info for the student join screen (no personal data)
+app.get('/api/classes/public', (req, res) => {
+  const room = String(req.query.room || '').trim().slice(0, 128);
+  if (!room) return res.status(400).json({ error: 'room is required' });
+  const forRoom = Array.from(scheduledClasses.values())
+    .filter((c) => c.room === room)
+    .sort((a, b) => new Date(b.startAt) - new Date(a.startAt));
+  const rec = forRoom.find((c) => classStatus(c) !== 'ended') || forRoom[0];
+  if (!rec) return res.status(404).json({ error: 'No scheduled class for this room' });
+  return res.json({ class: publicClass(rec) });
+});
+
+// Public: confirm attendance for an upcoming/live class
+app.post('/api/classes/:id/confirm', confirmLimiter, (req, res) => {
+  const rec = scheduledClasses.get(req.params.id);
+  if (!rec) return res.status(404).json({ error: 'Class not found' });
+  if (classStatus(rec) === 'ended') {
+    return res.status(409).json({ error: 'This class has already ended' });
+  }
+
+  const name = typeof req.body && typeof req.body.name === 'string'
+    ? req.body.name.trim().slice(0, 64)
+    : '';
+  if (!name) return res.status(400).json({ error: 'name is required to confirm attendance' });
+
+  rec.confirmations = rec.confirmations || [];
+  // Same name confirming twice just refreshes the timestamp
+  const existing = rec.confirmations.find((c) => c.name.toLowerCase() === name.toLowerCase());
+  if (existing) {
+    existing.at = Date.now();
+  } else {
+    if (rec.confirmations.length >= MAX_CONFIRMATIONS_PER_CLASS) {
+      return res.status(503).json({ error: 'Confirmation list is full for this class' });
+    }
+    rec.confirmations.push({ name, at: Date.now() });
+  }
+  saveClasses();
+  return res.json({ ok: true, confirmedCount: rec.confirmations.length, status: classStatus(rec) });
+});
+
 app.get('/api/config', (req, res) => {
   res.json({
     maxParticipantsPerRoom: MAX_PARTICIPANTS_PER_ROOM,

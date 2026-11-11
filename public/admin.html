@@ -239,6 +239,45 @@
     .room-head-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
     .participant strong { color: var(--warning); font-weight: 700; }
 
+    /* Scheduled classes panel */
+    .class-form {
+      display: grid; gap: 8px;
+      grid-template-columns: 2fr 1.2fr 1.2fr 70px auto;
+      margin-bottom: 10px;
+    }
+    @media (max-width: 800px) { .class-form { grid-template-columns: 1fr 1fr; } }
+    .class-form input {
+      background: var(--bg-3); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 10px; font-size: 12px; outline: none;
+    }
+    .class-form input:focus { border-color: var(--accent); }
+    .class-error { color: var(--danger); font-size: 12px; min-height: 16px; margin-bottom: 6px; }
+    .class-card {
+      background: var(--bg-3);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--text-faint);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px; margin-bottom: 8px;
+      font-size: 12px;
+      animation: slideIn .25s ease;
+    }
+    .class-card.upcoming { border-left-color: var(--info); }
+    .class-card.live { border-left-color: var(--success); background: rgba(61,220,151,0.05); }
+    .class-card.ended { opacity: 0.55; }
+    .class-card .c-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .class-card .c-title { font-weight: 700; font-size: 13px; color: var(--text); flex: 1; }
+    .class-card .c-status {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+      padding: 2px 8px; border-radius: 999px;
+      background: var(--surface); border: 1px solid var(--border-strong);
+    }
+    .class-card.live .c-status { color: var(--success); border-color: rgba(61,220,151,0.4); }
+    .class-card.upcoming .c-status { color: var(--info); border-color: rgba(79,124,255,0.4); }
+    .class-card .c-meta { color: var(--text-dim); font-family: var(--mono); font-size: 11px; word-break: break-all; }
+    .class-card .c-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+    .class-card .c-confirms { color: var(--text-dim); font-size: 11px; margin-right: auto; }
+
     .empty {
       text-align: center; padding: 40px 20px;
       color: var(--text-faint); font-size: 13px;
@@ -360,6 +399,30 @@
         <div class="value" id="statProlonged">0</div>
         <div class="sub">Hidden &gt; threshold</div>
         <div class="accent-bar"></div>
+      </div>
+    </section>
+
+    <!-- ===== Scheduled classes ===== -->
+    <section class="panel" id="classesPanel" style="margin-bottom:16px;">
+      <div class="panel-head">
+        Scheduled classes
+        <span class="count" id="classesCount">0</span>
+      </div>
+      <div class="panel-body">
+        <div class="class-form">
+          <input id="classTitle" type="text" placeholder="Class title, e.g. Excel for Beginners — Week 3" maxlength="120" />
+          <input id="classRoom" type="text" placeholder="Room (optional — auto from title)" maxlength="128" />
+          <input id="classStart" type="datetime-local" title="Start date and time" />
+          <input id="classDuration" type="number" min="5" max="600" value="60" title="Duration in minutes" />
+          <button id="classCreateBtn" class="pbtn small" type="button">➕ Schedule</button>
+        </div>
+        <div id="classError" class="class-error" role="alert" aria-live="polite"></div>
+        <div id="classesList">
+          <div class="empty" style="padding:16px;">
+            <div class="big">🗓️</div>
+            No classes scheduled yet
+          </div>
+        </div>
       </div>
     </section>
 

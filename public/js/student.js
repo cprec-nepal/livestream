@@ -58,6 +58,14 @@
       endedOverlay:   $('endedOverlay'),
       endedBackBtn:   $('endedBackBtn'),
       reconnectBanner: $('reconnectBanner'),
+      classCard:      $('classCard'),
+      classCardTitle: $('classCardTitle'),
+      classCardWhen:  $('classCardWhen'),
+      classCardStatus: $('classCardStatus'),
+      classConfirmRow: $('classConfirmRow'),
+      classConfirmBtn: $('classConfirmBtn'),
+      classConfirmedMsg: $('classConfirmedMsg'),
+      linkBtn:        $('linkBtn'),
     };
 
     // --------------------------------------------------------------
@@ -354,7 +362,10 @@
 
       // Wire up our socket.io session
       socket.emit('session:join', session);
-      if (isInstructor) socket.emit('telemetry:subscribe');
+      if (isInstructor) {
+        socket.emit('telemetry:subscribe');
+        els.linkBtn.hidden = false;
+      }
 
       // Update participant counter
       updateParticipantsCount();
@@ -1247,4 +1258,85 @@
     if (presetRoom) els.room.value = presetRoom;
     const presetName = params.get('name');
     if (presetName) els.name.value = presetName;
+
+    // --------------------------------------------------------------
+    // Scheduled-class card: when arriving via a class link
+    // (?room=...), show schedule info + attendance confirmation.
+    // --------------------------------------------------------------
+    if (presetRoom) {
+      fetch('/api/classes/public?room=' + encodeURIComponent(presetRoom))
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          const c = data && data.class;
+          if (!c) return; // no scheduled class — plain room join
+          els.classCard.hidden = false;
+          els.classCardTitle.textContent = '📅 ' + c.title;
+          const when = new Date(c.startAt).toLocaleString(undefined, {
+            weekday: 'short', year: 'numeric', month: 'short',
+            day: 'numeric', hour: '2-digit', minute: '2-digit',
+          });
+          els.classCardWhen.textContent = when + ' · ' + c.durationMin + ' min · ' +
+            (c.confirmedCount > 0 ? c.confirmedCount + ' confirmed' : 'be the first to confirm');
+          const statusEl = els.classCardStatus;
+          if (c.status === 'live') {
+            statusEl.textContent = '🔴 This class is LIVE — enter your name and join below';
+            statusEl.className = 'cc-status live';
+            els.classConfirmRow.hidden = true;
+          } else if (c.status === 'ended') {
+            statusEl.textContent = 'This class has ended.';
+            statusEl.className = 'cc-status ended';
+            els.classConfirmRow.hidden = true;
+          } else {
+            const mins = Math.round((new Date(c.startAt) - Date.now()) / 60000);
+            statusEl.textContent = mins >= 60
+              ? 'Starts in about ' + Math.round(mins / 60) + ' h — the room opens when your instructor joins'
+              : 'Starts in about ' + mins + ' min — the room opens when your instructor joins';
+            statusEl.className = 'cc-status';
+          }
+          els.classConfirmBtn.dataset.classId = c.id;
+        })
+        .catch(() => { /* no scheduled class — plain room join */ });
+    }
+
+    els.classConfirmBtn.addEventListener('click', async () => {
+      const name = els.name.value.trim();
+      if (!name) {
+        els.classCardStatus.textContent = 'Enter your name above first, then confirm.';
+        els.classCardStatus.className = 'cc-status';
+        els.name.focus();
+        return;
+      }
+      try {
+        els.classConfirmBtn.disabled = true;
+        const res = await fetch('/api/classes/' + els.classConfirmBtn.dataset.classId + '/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Confirmation failed');
+        els.classConfirmRow.hidden = true;
+        els.classConfirmedMsg.hidden = false;
+        els.classCardWhen.textContent = els.classCardWhen.textContent.replace(
+          /(\d+ confirmed|be the first to confirm)/,
+          data.confirmedCount + ' confirmed'
+        );
+      } catch (err) {
+        els.classCardStatus.textContent = err.message;
+        els.classConfirmBtn.disabled = false;
+      }
+    });
+
+    // Instructor: copy the invite link for the current room
+    els.linkBtn.addEventListener('click', async () => {
+      if (!currentRoom) return;
+      const link = location.origin + '/?room=' + encodeURIComponent(currentRoom);
+      try {
+        await navigator.clipboard.writeText(link);
+        els.linkBtn.textContent = '✅ Link copied';
+        setTimeout(() => { els.linkBtn.textContent = '🔗 Copy invite link'; }, 2000);
+      } catch (e) {
+        window.prompt('Copy this invite link:', link);
+      }
+    });
   })();

@@ -227,7 +227,29 @@ else
   bad "Join gate unexpected — student[${GATE_STUDENT}] instructor=${GATE_INST}"
 fi
 
-# 15. Functional socket flows against the gated server (gate,
+# 15. Scheduled classes: auth-gated create, public info, confirmation
+CLASS_START="$(node -e "console.log(new Date(Date.now()+3600000).toISOString())")"
+CLASS_UNAUTH="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"title\":\"Smoke class\",\"startAt\":\"${CLASS_START}\",\"durationMin\":60}" "${BASE}/api/classes")"
+COOKIE_JAR2="$(mktemp)"
+curl -s -o /dev/null -c "${COOKIE_JAR2}" -X POST -d "password=${ADMIN_PASSWORD}" "${BASE}/admin/login"
+CLASS_CREATE="$(curl -s -b "${COOKIE_JAR2}" -X POST -H 'Content-Type: application/json' \
+  -d "{\"title\":\"Smoke Test Class\",\"startAt\":\"${CLASS_START}\",\"durationMin\":60}" "${BASE}/api/classes")"
+CLASS_ID="$(printf '%s' "${CLASS_CREATE}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).class.id||'')}catch(e){console.log('')}})")"
+CLASS_ROOM="$(printf '%s' "${CLASS_CREATE}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).class.room||'')}catch(e){console.log('')}})")"
+CONFIRM_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"Test Student"}' "${BASE}/api/classes/${CLASS_ID}/confirm")"
+PUBLIC_OK="$(curl -s "${BASE}/api/classes/public?room=${CLASS_ROOM}")"
+if [ "${CLASS_UNAUTH}" = "401" ] && [ -n "${CLASS_ID}" ] \
+   && [ "${CONFIRM_CODE}" = "200" ] \
+   && printf '%s' "${PUBLIC_OK}" | grep -q '"confirmedCount":1'; then
+  ok "Scheduled classes: 401 unauth, create + confirm + public info OK"
+else
+  bad "Classes API unexpected — unauth=${CLASS_UNAUTH} id=${CLASS_ID} confirm=${CONFIRM_CODE} public=${PUBLIC_OK}"
+fi
+rm -f "${COOKIE_JAR2}"
+
+# 16. Functional socket flows against the gated server (gate,
 #     moderation, end-session teardown, room reuse)
 if PORT="${GATE_PORT}" INSTRUCTOR_CODE="test-instructor-code" node tests/socket-flows.js; then
   ok "Socket flow suite (gate, moderation, end-session, reuse)"
