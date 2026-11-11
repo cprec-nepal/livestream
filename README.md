@@ -9,9 +9,11 @@ Built for **CPREC Nepal**.
 ## ✨ Features
 
 - **Live video sessions** powered by LiveKit (WebRTC under the hood)
-- **Screen sharing** — one-click share/stop on desktop browsers (`getDisplayMedia`); the button stays hidden on unsupported mobile browsers
+- **Host-controlled screen sharing** — instructors always can share; students only after an instructor/admin grants them (per participant or room-wide), enforced by LiveKit participant permissions *and* token grants — not just hidden buttons
+- **Pinned shared screen** — click a screen tile to pin it as the big stage with a filmstrip of other participants below; ⛶ true fullscreen button; Esc to unpin
 - **Room chat** — real-time text chat relayed by the server over Socket.io, rate-limited and length-capped, fully visible in the admin monitor
 - **Mobile-first graceful degradation** — auto-detects mobile devices and applies lower video constraints (640×480 @ 15fps), defaults to audio-only, and enables `adaptiveStream: true`
+- **Insecure-origin warnings + optional HTTPS** — the join screen explains when a browser will block camera/mic (non-HTTPS LAN access), and the server can serve TLS directly via `TLS_CERT`/`TLS_KEY`
 - **Lightweight proctoring telemetry**
   - `document.visibilitychange` tracking → tab-switch alerts fired to the admin dashboard in real time
   - Periodic **canvas snapshot hashing** scheduled with `requestIdleCallback` so the main thread is never blocked — only SHA-256 *hashes* are sent, never the raw frames
@@ -137,6 +139,14 @@ Verify the deployment with the smoke test:
 ```bash
 ./test.sh
 ```
+
+### Joining from phones / other devices
+
+Browsers only allow camera/mic + WebRTC on **secure origins** (`https://…` or `localhost`). Opening `http://192.168.x.x:3000` from a phone on your Wi-Fi will be blocked — the join screen shows a clear warning when this happens. Pick one:
+
+1. **HTTPS via the server** — set `TLS_CERT` + `TLS_KEY` to PEM file paths and restart (e.g. certificates from Let's Encrypt). The server then serves `https://` directly.
+2. **Quick test tunnel** — `cloudflared tunnel --url http://localhost:3000` prints a temporary `https://…trycloudflare.com` URL phones can join.
+3. **Real hosting** — deploy behind a reverse proxy with TLS (Render does this automatically). Planned address: `https://livestream.cprecnepal.org.np` — set `CORS_ORIGIN=https://livestream.cprecnepal.org.np` and `TRUST_PROXY=true` there.
 
 See **[INSTALL.md](INSTALL.md)** for full setup + GitHub push instructions.
 

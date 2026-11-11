@@ -74,6 +74,8 @@
             name: r.name,
             participantCount: r.participantCount,
             participants: new Map(),
+            snapshotParticipants: Array.isArray(r.participants) ? r.participants : [],
+            sharers: new Set(Array.isArray(r.sharers) ? r.sharers : []),
             createdAt: r.createdAt,
           });
           if (Array.isArray(r.alerts)) {
@@ -107,6 +109,7 @@
         hidden: false,
         joinedAt: s.joinedAt,
       });
+      if (!room.sharers) room.sharers = new Set();
       room.participantCount = room.participants.size;
       renderRooms();
       renderStats();
@@ -129,6 +132,17 @@
       }
       renderRooms();
       renderStats();
+    });
+
+    // ---- share:permission (host grant/revoke of screen share) ------
+    socket.on('share:permission', (event) => {
+      if (!event || !event.roomName) return;
+      const room = rooms.get(event.roomName);
+      if (!room) return;
+      if (!room.sharers) room.sharers = new Set();
+      if (event.allowed) room.sharers.add(event.identity);
+      else room.sharers.delete(event.identity);
+      renderRooms();
     });
 
     // ---- telemetry:visibility (live state updates) -----------------
@@ -231,27 +245,68 @@
         const pct = Math.min(100, (r.participantCount / max) * 100);
         const capClass = pct >= 100 ? 'full' : (pct >= 80 ? 'warn' : '');
         const fillClass = pct >= 100 ? 'full' : (pct >= 80 ? 'warn' : '');
-        const participants = Array.from(r.participants.values()).map((p) => {
+        if (!r.sharers) r.sharers = new Set();
+        const participants = listParticipants(r).map((p) => {
           const cls = ['participant'];
           if (p.hidden) cls.push('hidden');
           if (p.isMobile) cls.push('mobile');
+          const isInstructor = p.role === 'instructor';
+          const canShare = isInstructor || r.sharers.has(p.identity);
           const label = escapeHtml(p.identity)
+            + (isInstructor ? ' · <strong>★ instructor</strong>' : '')
             + (p.isMobile ? ' · 📱' : '')
             + (p.hidden ? ' · hidden' : '');
-          return '<span class="' + cls.join(' ') + '"><span class="pdot"></span>' + label + '</span>';
+          const btn = isInstructor
+            ? ''
+            : '<button type="button" class="pbtn' + (canShare ? ' on' : '') + '" data-room="' + escapeHtml(r.name) + '" data-identity="' + escapeHtml(p.identity) + '" data-allow="' + (canShare ? '0' : '1') + '">' + (canShare ? '🖥️ share on' : '🖥️ allow share') + '</button>';
+          return '<span class="' + cls.join(' ') + '"><span class="pdot"></span>' + label + btn + '</span>';
         }).join('');
+        const bulk =
+          '<span class="bulk-share">' +
+            '<button type="button" class="pbtn small" data-room="' + escapeHtml(r.name) + '" data-all="1" data-allow="1">Allow all</button>' +
+            '<button type="button" class="pbtn small" data-room="' + escapeHtml(r.name) + '" data-all="1" data-allow="0">Revoke all</button>' +
+          '</span>';
         return '' +
           '<div class="room-card">' +
             '<div class="room-head">' +
               '<div><div class="room-name">' + escapeHtml(r.name) + '</div>' +
                 '<div class="room-meta">since ' + fmtTime(r.createdAt) + '</div></div>' +
-              '<div class="capacity ' + capClass + '">' + r.participantCount + ' / ' + max + '</div>' +
+              '<div class="room-head-right">' + bulk +
+                '<div class="capacity ' + capClass + '">' + r.participantCount + ' / ' + max + '</div>' +
+              '</div>' +
             '</div>' +
             '<div class="capacity-bar"><div class="fill ' + fillClass + '" style="width:' + pct + '%"></div></div>' +
             '<div class="participants">' + (participants || '<span class="participant"><span class="pdot"></span>no live telemetry yet</span>') + '</div>' +
           '</div>';
       }).join('');
     }
+
+    // Live telemetry participants preferred; snapshot list as fallback
+    function listParticipants(room) {
+      const live = Array.from(room.participants.values());
+      if (live.length > 0) return live;
+      return room.snapshotParticipants || [];
+    }
+
+    // Screen-share grant/revoke buttons (event delegation)
+    els.roomsList.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.pbtn');
+      if (!btn) return;
+      const roomName = btn.dataset.room || '';
+      const allow = btn.dataset.allow === '1';
+      if (btn.dataset.all) {
+        socket.emit('share:grantAll', { roomName, allow });
+      } else {
+        const identity = btn.dataset.identity || '';
+        if (identity) socket.emit('share:grant', { roomName, identity, allow });
+      }
+      // Optimistic flip; the share:permission echo confirms state
+      btn.classList.toggle('on', allow);
+      btn.dataset.allow = allow ? '0' : '1';
+      btn.textContent = btn.dataset.all
+        ? (allow ? 'Allow all' : 'Revoke all')
+        : (allow ? '🖥️ share on' : '🖥️ allow share');
+    });
 
     function renderAlerts() {
       els.alertsCount.textContent = alerts.length;

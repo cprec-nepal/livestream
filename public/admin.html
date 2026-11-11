@@ -218,6 +218,19 @@
     .participant.hidden .pdot { background: var(--warning); }
     .participant.mobile { color: var(--warning); border-color: rgba(255,184,77,0.25); }
 
+    .pbtn {
+      background: transparent; color: var(--text-dim);
+      border: 1px solid var(--border-strong); border-radius: 999px;
+      padding: 2px 8px; font-size: 10px; cursor: pointer;
+      margin-left: 4px;
+    }
+    .pbtn:hover { background: var(--surface-hover); color: var(--text); }
+    .pbtn.on { color: var(--success); border-color: rgba(61,220,151,0.4); }
+    .pbtn.small { margin-left: 0; }
+    .bulk-share { display: inline-flex; gap: 6px; margin-right: 8px; }
+    .room-head-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    .participant strong { color: var(--warning); font-weight: 700; }
+
     .empty {
       text-align: center; padding: 40px 20px;
       color: var(--text-faint); font-size: 13px;
