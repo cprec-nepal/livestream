@@ -29,6 +29,8 @@ require('dotenv').config();
 
 const path = require('path');
 const http = require('http');
+const https = require('https');
+const fs = require('fs');
 const crypto = require('crypto');          // for timingSafeEqual in admin auth
 const express = require('express');
 const helmet = require('helmet');
@@ -38,6 +40,7 @@ const jwt = require('jsonwebtoken');       // for admin session cookies
 const cookieParser = require('cookie-parser');
 const { Server: SocketIOServer } = require('socket.io');
 const { AccessToken } = require('livekit-server-sdk');
+const { TrackSource } = require('@livekit/protocol');
 
 // ------------------------------------------------------------------
 // Configuration
@@ -150,10 +153,29 @@ function ensureRoom(roomName) {
       name: roomName,
       participantCount: 0,
       alerts: [],
+      // Identities explicitly allowed to share their screen by a host
+      // (instructor or admin). Instructors are always allowed by role.
+      sharers: new Set(),
       createdAt: Date.now(),
     });
   }
   return rooms.get(roomName);
+}
+
+// All live participant sessions in a room (from the socket registry).
+function participantsInRoom(roomName) {
+  const out = [];
+  for (const session of socketToSession.values()) {
+    if (session.roomName === roomName) {
+      out.push({
+        identity: session.identity,
+        role: session.role,
+        isMobile: Boolean(session.isMobile),
+        joinedAt: session.joinedAt,
+      });
+    }
+  }
+  return out;
 }
 
 function incrementRoomCount(roomName) {
@@ -173,6 +195,76 @@ function pushAlert(roomName, alert) {
   if (room.alerts.length > 500) {
     room.alerts.splice(0, room.alerts.length - 500);
   }
+}
+
+// ------------------------------------------------------------------
+// Screen-share permission control (host-managed)
+//   Policy: instructors can always share; students need an explicit
+//   grant from a host. Enforcement is two-layered:
+//     1. JWT grants: student tokens only allow camera+mic unless the
+//        identity is in the room's sharers set at mint time.
+//     2. Live API: RoomServiceClient.updateParticipant flips the
+//        permission of a *connected* participant without a rejoin.
+// ------------------------------------------------------------------
+let roomServiceClient = null;
+function getRoomService() {
+  if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) return null;
+  if (!roomServiceClient) {
+    const { RoomServiceClient } = require('livekit-server-sdk');
+    roomServiceClient = new RoomServiceClient(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
+  }
+  return roomServiceClient;
+}
+
+function publishSourcesFor(role, roomName, identity) {
+  const sources = [TrackSource.CAMERA, TrackSource.MICROPHONE];
+  if (role === 'instructor' || ensureRoom(roomName).sharers.has(identity)) {
+    sources.push(TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO);
+  }
+  return sources;
+}
+
+// Best-effort live permission flip for a participant currently in the
+// room. Fails gracefully when LiveKit is unreachable (state change and
+// UI events still apply; the grant also persists in the room's sharers
+// set so tokens minted afterwards include the source).
+async function setLiveSharePermission(roomName, identity, allowed) {
+  const svc = getRoomService();
+  if (!svc) return { livekitUpdated: false, reason: 'no-credentials' };
+  try {
+    await svc.updateParticipant(roomName, identity, {
+      permission: {
+        canSubscribe: true,
+        canPublish: true,
+        canPublishData: true,
+        canPublishSources: allowed
+          ? [TrackSource.CAMERA, TrackSource.MICROPHONE, TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO]
+          : [TrackSource.CAMERA, TrackSource.MICROPHONE],
+      },
+    });
+    return { livekitUpdated: true };
+  } catch (err) {
+    console.warn(`[share] LiveKit updateParticipant failed for ${identity}@${roomName}: ${err.message}`);
+    return { livekitUpdated: false, reason: err.message };
+  }
+}
+
+async function applyShareGrant(roomName, identity, allowed) {
+  const room = ensureRoom(roomName);
+  if (allowed) room.sharers.add(identity);
+  else room.sharers.delete(identity);
+
+  const live = await setLiveSharePermission(roomName, identity, allowed);
+  const event = {
+    roomName,
+    identity,
+    allowed,
+    enforcedByLiveKit: live.livekitUpdated,
+    timestamp: Date.now(),
+  };
+  io.to(roomName).emit('share:permission', event);
+  io.to(ADMIN_ROOM).emit('share:permission', event);
+  return event;
 }
 
 // ------------------------------------------------------------------
@@ -457,6 +549,9 @@ app.post('/api/token', tokenLimiter, async (req, res) => {
       canPublish: true,
       canSubscribe: true,
       canPublishData: true,
+      // Host-managed screen sharing: instructors always can; students
+      // only when a host has granted them in this room.
+      canPublishSources: publishSourcesFor(safeRole, safeRoom, safeIdentity),
     });
 
     const token = await at.toJwt();
@@ -645,6 +740,57 @@ io.on('connection', (socket) => {
     io.to(ADMIN_ROOM).emit('chat:message', msg);
   });
 
+  // ---- share:grant -----------------------------------------------
+  // Host-controlled screen sharing. Admin sockets (dashboard) may grant
+  // any room; instructor sockets only their own room. Students cannot.
+  socket.on('share:grant', (data) => {
+    const isAdmin = socket.handshake.isAdmin === true;
+    const session = socketToSession.get(socket.id);
+    const isInstructor = Boolean(session && session.role === 'instructor');
+    if (!isAdmin && !isInstructor) return;
+    if (!data || typeof data !== 'object') return;
+
+    const roomName = typeof data.roomName === 'string' ? data.roomName.trim().slice(0, 128) : '';
+    const identity = typeof data.identity === 'string' ? data.identity.trim().slice(0, 128) : '';
+    if (!roomName || !identity) return;
+    if (!isAdmin && session.roomName !== roomName) return; // instructors: own room only
+
+    applyShareGrant(roomName, identity, Boolean(data.allow));
+  });
+
+  // ---- share:grantAll --------------------------------------------
+  // Bulk grant/revoke every student currently in a room. Instructors
+  // are untouched — they are always allowed by role.
+  socket.on('share:grantAll', async (data) => {
+    const isAdmin = socket.handshake.isAdmin === true;
+    const session = socketToSession.get(socket.id);
+    const isInstructor = Boolean(session && session.role === 'instructor');
+    if (!isAdmin && !isInstructor) return;
+    if (!data || typeof data !== 'object') return;
+
+    const roomName = typeof data.roomName === 'string' ? data.roomName.trim().slice(0, 128) : '';
+    if (!roomName) return;
+    if (!isAdmin && session.roomName !== roomName) return;
+
+    const allow = Boolean(data.allow);
+    const room = ensureRoom(roomName);
+    const students = participantsInRoom(roomName).filter((p) => p.role !== 'instructor');
+    for (const p of students) {
+      if (allow) room.sharers.add(p.identity);
+      else room.sharers.delete(p.identity);
+      await setLiveSharePermission(roomName, p.identity, allow);
+      const event = {
+        roomName,
+        identity: p.identity,
+        allowed: allow,
+        enforcedByLiveKit: false, // events below carry the real flag
+        timestamp: Date.now(),
+      };
+      io.to(roomName).emit('share:permission', event);
+      io.to(ADMIN_ROOM).emit('share:permission', event);
+    }
+  });
+
   // ---- admin:join -----------------------------------------------
   // Admin dashboard subscribes to the broadcast channel and gets a
   // current state snapshot on connect. Refuse unless the socket was
@@ -660,6 +806,8 @@ io.on('connection', (socket) => {
       name,
       participantCount: r.participantCount,
       alerts: r.alerts.slice(-50),
+      sharers: Array.from(r.sharers || []),
+      participants: participantsInRoom(name),
       createdAt: r.createdAt,
     }));
     socket.emit('admin:state', {
@@ -733,18 +881,33 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // not bind a port)
 // ------------------------------------------------------------------
 if (require.main === module) {
-  server.listen(PORT, () => {
+  // Optional HTTPS: set TLS_CERT + TLS_KEY to PEM file paths to serve
+  // https directly (needed for camera/mic on phones without a proxy).
+  const tlsCertPath = process.env.TLS_CERT || '';
+  const tlsKeyPath = process.env.TLS_KEY || '';
+  const useTls = Boolean(tlsCertPath && tlsKeyPath && fs.existsSync(tlsCertPath) && fs.existsSync(tlsKeyPath));
+
+  const listenServer = useTls
+    ? https.createServer({ cert: fs.readFileSync(tlsCertPath), key: fs.readFileSync(tlsKeyPath) }, app)
+    : server;
+  const scheme = useTls ? 'https' : 'http';
+
+  listenServer.listen(PORT, () => {
     console.log('─────────────────────────────────────────────────────');
     console.log(`  livestream-proctor  ·  ${NODE_ENV}`);
-    console.log(`  HTTP:           http://localhost:${PORT}`);
-    console.log(`  Student UI:     http://localhost:${PORT}/`);
-    console.log(`  Admin login:    http://localhost:${PORT}/admin/login`);
-    console.log(`  Admin UI:       http://localhost:${PORT}/admin.html`);
-    console.log(`  Health:         http://localhost:${PORT}/health`);
+    console.log(`  HTTP:           ${scheme}://localhost:${PORT}`);
+    console.log(`  Student UI:     ${scheme}://localhost:${PORT}/`);
+    console.log(`  Admin login:    ${scheme}://localhost:${PORT}/admin/login`);
+    console.log(`  Admin UI:       ${scheme}://localhost:${PORT}/admin.html`);
+    console.log(`  Health:         ${scheme}://localhost:${PORT}/health`);
     console.log(`  LiveKit URL:    ${LIVEKIT_URL}`);
     console.log(`  Max/room:       ${MAX_PARTICIPANTS_PER_ROOM}`);
+    console.log(`  Screen share:   instructor-only until granted (host-controlled)`);
     console.log(`  CORS origin:    ${CORS_ORIGINS === '*' ? '*' : CORS_ORIGINS.join(', ')}`);
     console.log(`  Admin auth:     ${ADMIN_AUTH_SOURCE === 'none' ? 'DISABLED (set ADMIN_PASSWORD_HASH)' : 'enabled (' + ADMIN_AUTH_SOURCE + ')'}`);
+    if (!useTls) {
+      console.log('  TLS:            off (set TLS_CERT + TLS_KEY for https)');
+    }
     console.log('─────────────────────────────────────────────────────');
   });
 }

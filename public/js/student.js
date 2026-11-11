@@ -40,6 +40,8 @@
       chatLog:       $('chatLog'),
       chatInput:     $('chatInput'),
       chatSend:      $('chatSend'),
+      securityWarning: $('securityWarning'),
+      instructorRole: $('instructorRole'),
     };
 
     // --------------------------------------------------------------
@@ -52,6 +54,14 @@
     const isSmallScreen = window.innerWidth < 768
       || Math.min(window.screen.width, window.screen.height) <= 768;
     const isMobile = isMobileUA || isSmallScreen;
+
+    // Browsers block camera/mic + WebRTC (and crypto.subtle) on insecure
+    // origins — e.g. http://192.168.x.x opened from a phone. localhost
+    // counts as secure, so local use is unaffected.
+    const isSecure = window.isSecureContext === true;
+    if (!isSecure) {
+      els.securityWarning.classList.add('show');
+    }
 
     // Video profiles
     const PROFILES = {
@@ -87,13 +97,27 @@
     let micEnabled = false;
     let camEnabled = false;
     let screenSharing = false;
+    let pinnedTileId = null;   // pinned screen-share tile
     let currentRoom = null;    // room name filter for chat messages
     let lastSnapshotHash = null;
     let snapshotTimer = null;
+    let snapshotDisabledNoteShown = false;
 
     // Screen sharing needs getDisplayMedia — unsupported on most
     // mobile browsers, so the button stays hidden there.
     const canScreenShare = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+
+    // Host-managed screen sharing: instructors always can; students are
+    // granted live by a host (admin dashboard / instructor) via the
+    // share:permission socket event. Enforced server-side by token
+    // grants + LiveKit participant permissions.
+    let myRole = 'student';
+    let shareAllowed = false;
+
+    function updateShareButton() {
+      const visible = Boolean(room) && canScreenShare && (myRole === 'instructor' || shareAllowed);
+      els.shareBtn.hidden = !visible;
+    }
 
     // --------------------------------------------------------------
     // Status pill helper
@@ -141,12 +165,13 @@
       els.joinBtn.disabled = true;
       els.joinBtn.textContent = 'Connecting…';
       setStatus('warn', 'Requesting token');
+      myRole = els.instructorRole && els.instructorRole.checked ? 'instructor' : 'student';
 
       try {
         const res = await fetch('/api/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ roomName, identity, role: 'student' }),
+          body: JSON.stringify({ roomName, identity, role: myRole }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -202,12 +227,12 @@
 
       await room.connect(url, token);
 
-      session = { roomName, identity, role: 'student', isMobile };
+      session = { roomName, identity, role: myRole, isMobile };
       currentRoom = roomName;
       els.joinScreen.style.display = 'none';
       els.classroom.classList.add('active');
       els.roomName.textContent = roomName;
-      els.roomMeta.textContent = profile.label;
+      els.roomMeta.textContent = profile.label + (myRole === 'instructor' ? ' · instructor' : '');
       els.infoIdentity.textContent = identity;
       els.infoRoom.textContent = roomName;
       els.infoDevice.textContent = isMobile ? 'Mobile' : 'Desktop';
@@ -216,10 +241,11 @@
       // Publish local tracks — mobile starts audio-only
       await publishLocalTracks();
 
-      // Chat reset + notice; screen-share button only where supported
+      // Chat reset + notice; share button per host policy
       els.chatLog.innerHTML = '';
       addChatMessage({ text: 'Chat started — messages are visible to the session monitor.' }, false, true);
-      if (canScreenShare) els.shareBtn.hidden = false;
+      shareAllowed = false; // fresh room state; instructors bypass below
+      updateShareButton();
 
       // Wire up our socket.io session
       socket.emit('session:join', session);
@@ -418,11 +444,56 @@
         tile.className = 'tile remote screen-share';
         tile.innerHTML =
           '<video playsinline autoplay></video>' +
-          '<div class="label">🖥️ ' + escapeHtml(label) + (self ? ' (you)' : '') + '</div>';
+          '<div class="label">🖥️ ' + escapeHtml(label) + (self ? ' (you)' : '') + '</div>' +
+          '<div class="tile-controls">' +
+            '<button type="button" class="tc-pin" title="Pin this screen to the main stage">📌 Pin</button>' +
+            '<button type="button" class="tc-fs" title="Fullscreen">⛶</button>' +
+          '</div>';
         els.videoGrid.appendChild(tile);
+
+        // Click tile (not its buttons) to pin/unpin
+        tile.addEventListener('click', (ev) => {
+          if (ev.target.closest('.tile-controls')) return;
+          setPinned(tile.id === pinnedTileId ? null : tile.id);
+        });
+        tile.querySelector('.tc-pin').addEventListener('click', () =>
+          setPinned(tile.id === pinnedTileId ? null : tile.id));
+        tile.querySelector('.tc-fs').addEventListener('click', () => {
+          const video = tile.querySelector('video');
+          if (!video) return;
+          if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+          } else if (video.requestFullscreen) {
+            video.requestFullscreen().catch(() => {});
+          }
+        });
       }
       return tile;
     }
+
+    // Pin one screen-share tile as the big stage; everything else
+    // shrinks into a filmstrip below (CSS via .has-pinned/.pinned).
+    function setPinned(tileId) {
+      pinnedTileId = tileId || null;
+      const grid = els.videoGrid;
+      grid.querySelectorAll('.tile.pinned').forEach((t) => t.classList.remove('pinned'));
+      grid.classList.toggle('has-pinned', Boolean(pinnedTileId));
+      if (pinnedTileId) {
+        const tile = document.getElementById(pinnedTileId);
+        if (tile) {
+          tile.classList.add('pinned');
+          const btn = tile.querySelector('.tc-pin');
+          if (btn) btn.textContent = '📌 Unpin';
+        }
+      }
+      grid.querySelectorAll('.tile.screen-share:not(.pinned) .tc-pin').forEach((b) => {
+        b.textContent = '📌 Pin';
+      });
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && pinnedTileId) setPinned(null);
+    });
 
     function onLocalTrackPublished(pub) {
       if (!isScreenPub(pub) || !pub.track) return;
@@ -473,6 +544,8 @@
       // Reset share/chat state for the next session
       screenSharing = false;
       currentRoom = null;
+      shareAllowed = false;
+      setPinned(null);
       els.shareBtn.hidden = true;
       els.shareBtn.textContent = '🖥️ Share screen';
       els.shareBtn.classList.remove('sharing');
@@ -482,6 +555,34 @@
       const n = room ? room.numParticipants : 0;
       els.participantsCount.textContent = n + ' participant' + (n === 1 ? '' : 's');
     }
+
+    // --------------------------------------------------------------
+    // Host-managed screen share permissions
+    // --------------------------------------------------------------
+    socket.on('share:permission', (event) => {
+      if (!event || event.roomName !== currentRoom || !session) return;
+      // Instructors always keep the right; events about other users don't
+      // affect our own button.
+      if (event.identity === session.identity) {
+        if (myRole !== 'instructor') {
+          shareAllowed = Boolean(event.allowed);
+          if (!shareAllowed && screenSharing) {
+            // Revoked mid-share — LiveKit also enforces server-side.
+            room.localParticipant.setScreenShareEnabled(false).catch(() => {});
+          }
+        } else {
+          shareAllowed = true;
+        }
+        updateShareButton();
+        if (myRole !== 'instructor') {
+          logTelemetry(
+            shareAllowed
+              ? 'Instructor allowed you to share your screen'
+              : 'Screen sharing revoked by instructor'
+          );
+        }
+      }
+    });
 
     // --------------------------------------------------------------
     // Room chat — relayed by our server over Socket.io. Room and
@@ -703,7 +804,16 @@
         return null;
       }
 
-      // SHA-256 hash the pixel buffer (works on Uint8ClampedArray)
+      // SHA-256 hash the pixel buffer (works on Uint8ClampedArray).
+      // crypto.subtle only exists in secure contexts — on insecure
+      // origins (http over LAN) snapshot hashing is skipped.
+      if (!window.crypto || !window.crypto.subtle || !window.isSecureContext) {
+        if (!snapshotDisabledNoteShown) {
+          snapshotDisabledNoteShown = true;
+          logTelemetry('Snapshot hashing disabled (requires HTTPS)', 'err');
+        }
+        return null;
+      }
       const hashBuf = await crypto.subtle.digest('SHA-256', imageData.data);
       const hashArr = Array.from(new Uint8Array(hashBuf));
       return hashArr.map(b => b.toString(16).padStart(2, '0')).join('');

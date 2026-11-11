@@ -138,6 +138,23 @@ else
   bad "Student UI missing screen-share/chat markup"
 fi
 
+# 11. Token grants: students may NOT screen-share (instructor-only policy)
+STUDENT_TOKEN="$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"roomName":"grant-room","identity":"stu1","role":"student"}' "${BASE}/api/token" \
+  | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).token||'')}catch(e){console.log('')}})")"
+INSTRUCTOR_TOKEN="$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"roomName":"grant-room","identity":"teach1","role":"instructor"}' "${BASE}/api/token" \
+  | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).token||'')}catch(e){console.log('')}})")"
+STUDENT_SOURCES="$(node -e "try{const p=JSON.parse(Buffer.from(process.argv[1].split('.')[1],'base64url').toString());console.log((p.video&&p.video.canPublishSources||[]).join(','))}catch(e){console.log('parse-error')}" "${STUDENT_TOKEN}")"
+INSTRUCTOR_SOURCES="$(node -e "try{const p=JSON.parse(Buffer.from(process.argv[1].split('.')[1],'base64url').toString());console.log((p.video&&p.video.canPublishSources||[]).join(','))}catch(e){console.log('parse-error')}" "${INSTRUCTOR_TOKEN}")"
+if printf '%s' "${STUDENT_SOURCES}" | grep -q 'camera' \
+   && ! printf '%s' "${STUDENT_SOURCES}" | grep -q 'screen_share' \
+   && printf '%s' "${INSTRUCTOR_SOURCES}" | grep -q 'screen_share'; then
+  ok "JWT grants: student = camera+mic only; instructor includes screen_share"
+else
+  bad "JWT grants unexpected — student[${STUDENT_SOURCES}] instructor[${INSTRUCTOR_SOURCES}]"
+fi
+
 echo ""
 echo "Result: ${PASS} passed, ${FAIL} failed"
 if [ "${FAIL}" -ne 0 ]; then

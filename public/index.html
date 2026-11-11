@@ -354,6 +354,49 @@
       padding-top: 10px; border-top: 1px dashed var(--border);
     }
 
+    /* Security warning (insecure origin: http on a LAN IP etc.) */
+    .security-warning {
+      display: none;
+      background: rgba(255,184,0,0.08);
+      border: 1px solid rgba(255,184,0,0.35);
+      color: var(--warning);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 13px; line-height: 1.5;
+      margin-bottom: 16px;
+    }
+    .security-warning.show { display: block; }
+
+    /* Instructor option on the join card */
+    .role-row {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 10px; font-size: 13px; color: var(--text-dim);
+    }
+    .role-row input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; }
+
+    /* Pinned screen share — big stage + filmstrip of small tiles */
+    .video-grid.has-pinned { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    .video-grid.has-pinned .tile.pinned {
+      grid-column: 1 / -1;
+      min-height: 300px;
+      border-color: var(--warning);
+      box-shadow: 0 0 0 1px rgba(255,184,0,0.35);
+      z-index: 1;
+    }
+    .tile { cursor: default; }
+    .tile.screen-share { cursor: pointer; }
+    .tile .tile-controls {
+      position: absolute; top: 8px; right: 8px;
+      display: none; gap: 6px; z-index: 3;
+    }
+    .tile.screen-share .tile-controls { display: flex; }
+    .tile .tile-controls button {
+      background: rgba(7,10,18,0.75); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: 8px;
+      padding: 4px 8px; font-size: 12px; cursor: pointer;
+    }
+    .tile .tile-controls button:hover { background: rgba(7,10,18,0.95); }
+
     /* Mobile adjustments */
     @media (max-width: 640px) {
       .app { padding: 10px 12px 24px; }
@@ -396,6 +439,10 @@
       <h1>Join the live session</h1>
       <p class="lead">Enter your name and the session room. Mobile devices join audio-only by default to save bandwidth.</p>
 
+      <div id="securityWarning" class="security-warning">
+        <strong>⚠️ Insecure connection.</strong> Cameras, microphones and live video are blocked by your browser on non-HTTPS pages. Open this page over <code>https://</code> (or <code>localhost</code>) to join properly.
+      </div>
+
       <div class="field">
         <label for="name">Your name</label>
         <input id="name" type="text" autocomplete="name" placeholder="e.g. Aarav Sharma" />
@@ -403,6 +450,11 @@
       <div class="field">
         <label for="room">Room name</label>
         <input id="room" type="text" placeholder="e.g. math-101" />
+      </div>
+
+      <div class="role-row">
+        <input id="instructorRole" type="checkbox" />
+        <label for="instructorRole">Join as instructor (host)</label>
       </div>
 
       <div class="btn-row">
