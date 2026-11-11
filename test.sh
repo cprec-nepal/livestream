@@ -155,6 +155,15 @@ else
   bad "JWT grants unexpected — student[${STUDENT_SOURCES}] instructor[${INSTRUCTOR_SOURCES}]"
 fi
 
+# 12. Pin/fullscreen controls ship for every video tile (all participants)
+STUDENT_JS="$(curl -s "${BASE}/js/student.js")"
+if printf '%s' "${STUDENT_JS}" | grep -q 'tc-pin' \
+   && printf '%s' "${STUDENT_JS}" | grep -q 'requestFullscreen'; then
+  ok "Student JS ships universal pin/fullscreen tile controls"
+else
+  bad "Student JS missing pin/fullscreen tile controls"
+fi
+
 echo ""
 echo "Result: ${PASS} passed, ${FAIL} failed"
 if [ "${FAIL}" -ne 0 ]; then
