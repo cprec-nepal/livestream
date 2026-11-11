@@ -611,9 +611,20 @@ app.get('/js/vendor/livekit-client.umd.js', (_req, res) => {
 });
 
 // Now serve static files (public/index.html, public/admin.html, /socket.io/)
+// Cache-Control: no-cache for app files so Cloudflare's edge (orange
+// cloud / tunnel) revalidates with ETags instead of serving stale JS —
+// otherwise deploys don't reach visitors until the edge cache expires.
+// The logo is content-stable, so it gets a day of shared caching.
 app.use(express.static(path.join(__dirname, 'public'), {
   index: 'index.html',
   extensions: ['html'],
+  setHeaders(res, filePath) {
+    if (filePath.includes(path.join('public', 'img'))) {
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+    } else {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  },
 }));
 
 // ------------------------------------------------------------------
