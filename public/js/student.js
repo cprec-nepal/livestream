@@ -42,6 +42,8 @@
       chatSend:      $('chatSend'),
       securityWarning: $('securityWarning'),
       instructorRole: $('instructorRole'),
+      instructorCodeField: $('instructorCodeField'),
+      instructorCode: $('instructorCode'),
     };
 
     // --------------------------------------------------------------
@@ -61,6 +63,14 @@
     const isSecure = window.isSecureContext === true;
     if (!isSecure) {
       els.securityWarning.classList.add('show');
+    }
+
+    // Instructor code field appears only when joining as host
+    if (els.instructorRole && els.instructorCodeField) {
+      els.instructorRole.addEventListener('change', () => {
+        els.instructorCodeField.hidden = !els.instructorRole.checked;
+        if (els.instructorRole.checked) els.instructorCode.focus();
+      });
     }
 
     // Video profiles
@@ -168,10 +178,14 @@
       myRole = els.instructorRole && els.instructorRole.checked ? 'instructor' : 'student';
 
       try {
+        const payload = { roomName, identity, role: myRole };
+        if (myRole === 'instructor') {
+          payload.code = els.instructorCode ? els.instructorCode.value.trim() : '';
+        }
         const res = await fetch('/api/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ roomName, identity, role: myRole }),
+          body: JSON.stringify(payload),
         });
         const data = await res.json();
         if (!res.ok) {
